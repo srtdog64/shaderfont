@@ -46,7 +46,10 @@ function checkLayout() {
   output.textContent = JSON.stringify({ status: same && style.display === "inline" ? "pass" : "fail",
     plain, effect, fragments: host.getClientRects().length, display: style.display,
     blend: style.backgroundBlendMode, filter: style.filter, selected: getSelection().toString(),
-    state: host.dataset.shaderFontState, mask: host.style.maskImage !== "none" && !!host.style.maskImage }, null, 2);
+    state: host.dataset.shaderFontState, mask: host.style.maskImage !== "none" && !!host.style.maskImage,
+    selectionIndicatorRects: document.querySelectorAll('.shaderfont-selection-indicator > span').length,
+    selectionColor: getComputedStyle(host, '::selection').color,
+    selectionBackground: getComputedStyle(host, '::selection').backgroundColor }, null, 2);
 }
 document.querySelector("#select").addEventListener("click", () => {
   const range = document.createRange();

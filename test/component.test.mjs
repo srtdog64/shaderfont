@@ -30,6 +30,7 @@ class TestElement extends EventTarget {
     this.isConnected = false;
     this.layoutReads = 0;
     this.captured = new Set();
+    this.children = [];
   }
   getAttribute(name) { return this.attributesMap.get(name) ?? null; }
   setAttribute(name, value) {
@@ -38,6 +39,9 @@ class TestElement extends EventTarget {
     if (this.constructor.observedAttributes?.includes(name)) this.attributeChangedCallback(name, previous, String(value));
   }
   hasAttribute(name) { return this.attributesMap.has(name); }
+  append(...children) { children.forEach(child => { child.parentElement = this; this.children.push(child); }); }
+  replaceChildren(...children) { this.children.forEach(child => { child.parentElement = null; }); this.children = []; this.append(...children); }
+  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
   contains(node) { return node?.owner === this; }
   matches() { return false; }
   querySelectorAll() { return []; }
@@ -70,6 +74,7 @@ globalThis.requestAnimationFrame = callback => { const id = nextId++; frames.set
 globalThis.cancelAnimationFrame = id => frames.delete(id);
 globalThis.clearTimeout = id => timers.delete(id);
 globalThis.window = Object.assign(new EventTarget(), {
+  innerWidth: 1024, innerHeight: 768,
   setTimeout(callback, delay) { const id = nextId++; timers.set(id, { callback, due: now + delay }); return id; }
 });
 globalThis.document = Object.assign(new EventTarget(), {
@@ -78,7 +83,9 @@ globalThis.document = Object.assign(new EventTarget(), {
   getElementById: () => ({}),
   querySelectorAll: () => [],
   documentElement: new TestElement(),
+  body: new TestElement(),
   createElement(name) {
+    if (name === "div" || name === "span") { const element = new TestElement(); element.textContent = ""; return element; }
     assert.equal(name, "canvas");
     canvases += 1;
     return Object.assign(new EventTarget(), {
@@ -703,4 +710,107 @@ test("inline selection, material and reveal share the decoration strip coordinat
   } finally {
     globalThis.getComputedStyle = computedStyle;
   }
+});
+
+test("selection stays inspectable outside the glyph mask and disappears on deselection", () => {
+  const element = host();
+  begin(element);
+  element.onPointerEnd(pointer("pointerup"));
+  advance(2600);
+  const indicator = document.body.children.find(child => child.className === "shaderfont-selection-indicator");
+  assert.ok(indicator);
+  assert.equal(indicator.getAttribute("aria-hidden"), "true");
+  assert.equal(indicator.textContent, "", "the indicator must never duplicate the selected text");
+  assert.deepEqual(indicator.children[0].style.left, "20px");
+  assert.equal(indicator.children[0].style.width, "100px");
+  assert.equal(element.dissolve, 1);
+  assert.equal(frames.size, 0, "a retained indicator does not poll every frame");
+  selection = null;
+  element.onSelectionChange();
+  assert.equal(document.body.children.includes(indicator), false);
+});
+
+test("selection indicator follows scrolling without animating and cleans up on disconnect", () => {
+  const element = host();
+  begin(element);
+  element.onPointerEnd(pointer("pointerup"));
+  advance(2600);
+  const node = { owner: element };
+  selection.getRangeAt = () => ({ getClientRects: () => [{ left: 30, top: 120, right: 110, bottom: 152 }] });
+  selection.anchorNode = selection.focusNode = node;
+  window.dispatchEvent(new Event("scroll"));
+  advance(16);
+  const indicator = document.body.children.find(child => child.className === "shaderfont-selection-indicator");
+  assert.equal(indicator.children[0].style.top, "120px");
+  assert.equal(indicator.children[0].style.width, "80px");
+  element.disconnectedCallback();
+  assert.equal(document.body.children.includes(indicator), false);
+  window.dispatchEvent(new Event("scroll"));
+  assert.equal(frames.size, 0);
+});
+
+test("framework property writes cannot shadow internal attribute readers", () => {
+  const element = new ShaderFont();
+  hosts.push(element);
+  for (const [name, value] of Object.entries({ renderer: "canvas2d", flow: "rtl", interaction: "none" })) {
+    assert.equal(typeof element[name], "undefined", `${name} must not be an internal method`);
+    // Simulate a pre-existing consumer property as well as framework attribute dispatch.
+    element[name] = value;
+    element.setAttribute(name, value);
+  }
+  element.isConnected = true;
+  assert.doesNotThrow(() => element.connectedCallback());
+  assert.equal(element.dataset.renderer, "canvas2d");
+  assert.equal(element.selectionFlow(), "rtl");
+  assert.equal(element.interactionMode(), "none");
+  element.setAttribute("flow", "ltr");
+  assert.equal(element.selectionFlow(), "ltr", "attributes remain the single option owner");
+  element.onPointerDown(pointer("pointerdown"));
+  assert.equal(element.gesture.tag, "idle");
+});
+
+test("indicator respects the viewport and empty, invalid or offscreen ranges", () => {
+  const element = host();
+  element.selectionIndicator.update([{ left: -10, top: 20, right: 20, bottom: 40 },
+    { left: NaN, top: 20, right: 20, bottom: 40 }, { left: 20, top: 800, right: 40, bottom: 820 }]);
+  const indicator = document.body.children.find(child => child.className === "shaderfont-selection-indicator");
+  assert.equal(indicator.children.length, 1);
+  assert.equal(indicator.children[0].style.left, "0px");
+  assert.equal(indicator.children[0].style.width, "20px");
+  element.selectionIndicator.update([]);
+  assert.equal(document.body.children.includes(indicator), false);
+});
+
+test("selection indicator clips to scroll containers and stays above its own dialog", () => {
+  const computed = globalThis.getComputedStyle;
+  const element = host(), parent = new TestElement();
+  parent.getBoundingClientRect = () => ({ left: 10, top: 10, right: 100, bottom: 100 });
+  element.parentElement = parent;
+  globalThis.getComputedStyle = value => value === parent
+    ? { overflowX: "hidden", overflowY: "auto", zIndex: "101" } : computed(value);
+  try {
+    element.selectionIndicator.update([{ left: 0, top: 0, right: 200, bottom: 200 }]);
+    const indicator = document.body.children.find(child => child.className === "shaderfont-selection-indicator");
+    assert.equal(indicator.style.zIndex, "102");
+    assert.equal(indicator.children[0].style.left, "10px");
+    assert.equal(indicator.children[0].style.width, "90px");
+    assert.equal(indicator.children[0].style.height, "90px");
+  } finally { globalThis.getComputedStyle = computed; }
+});
+
+test("selection indicator failures stop safely instead of keeping an obsolete selection layer", () => {
+  const element = host();
+  begin(element);
+  element.onPointerEnd(pointer("pointerup"));
+  advance(2600);
+  const errors = [];
+  element.addEventListener("shaderfont-error", event => errors.push(event.detail));
+  selection.getRangeAt = () => ({ getClientRects() { throw new Error("Range geometry unavailable"); } });
+  window.dispatchEvent(new Event("scroll"));
+  advance(16);
+  assert.equal(document.body.children.some(child => child.className === "shaderfont-selection-indicator"), false);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].phase, "selection");
+  assert.equal(element.style.maskImage, "none");
+  assert.equal(frames.size, 0);
 });

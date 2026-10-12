@@ -27,6 +27,7 @@ import { rendererError } from "./webgl-surface.js";
 import { createRevealField, revealSample } from "./reveal-core.js";
 import { createRevealRenderer } from "./reveal-renderer.js";
 import { createPaintLayout, projectSelectionRects } from "./paint-layout.js";
+import { createSelectionIndicator } from "./selection-indicator.js";
 
 const STYLE_ID = "shader-font-component-styles";
 const MASK_STEPS = 144;
@@ -133,11 +134,24 @@ function ensureStyles() {
       outline: 1px solid color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 38%, transparent);
       outline-offset: .16em;
     }
-    shader-font[data-drag-effect="dissolve"]::selection,
-    shaderfont[data-drag-effect="dissolve"]::selection {
-      color: transparent;
-      -webkit-text-fill-color: transparent;
-      background: transparent;
+    shader-font::selection, shaderfont::selection {
+      color: HighlightText;
+      -webkit-text-fill-color: HighlightText;
+      background: Highlight;
+      text-shadow: none;
+    }
+    .shaderfont-selection-indicator {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      user-select: none;
+    }
+    .shaderfont-selection-indicator > span {
+      position: absolute;
+      pointer-events: none;
+      box-sizing: border-box;
+      outline: 1px solid Highlight;
+      background: color-mix(in srgb, Highlight 24%, transparent);
     }
 
     shader-font[data-shader="none"],
@@ -151,25 +165,6 @@ function ensureStyles() {
       text-shadow: none;
       filter: none;
       animation: none;
-    }
-
-    shader-font[data-shader="none"][data-drag-effect="dissolve"]::selection {
-      color: currentColor;
-      -webkit-text-fill-color: currentColor;
-      background: transparent;
-    }
-
-    shader-font[data-drag-effect="none"]::selection,
-    shaderfont[data-drag-effect="none"]::selection {
-      color: HighlightText;
-      -webkit-text-fill-color: HighlightText;
-      background: Highlight;
-    }
-
-    shader-font[data-renderer-status="error"]::selection {
-      color: HighlightText;
-      -webkit-text-fill-color: HighlightText;
-      background: Highlight;
     }
 
     shader-font[data-shader]:not([data-shader="none"]):not([data-shader="hologram"]) {
@@ -267,9 +262,10 @@ function ownedSelection(element) {
 function selectionGeometry(element) {
   const owned = ownedSelection(element);
   if (!owned) return null;
-  const rects = projectSelectionRects(measurePaintLayout(element), Array.from(owned.range.getClientRects()));
+  const viewportRects = Array.from(owned.range.getClientRects());
+  const rects = projectSelectionRects(measurePaintLayout(element), viewportRects);
   if (rects.length === 0) return null;
-  return rects;
+  return { regions: rects, viewportRects };
 }
 
 function measurePaintLayout(element) {
@@ -308,6 +304,9 @@ export class ShaderFont extends HTMLElement {
     this.dissolveStartedAt = null;
     this.selectionDirty = true;
     this.selectionRegions = [];
+    this.selectionIndicator = createSelectionIndicator(this,
+      () => { const owned = ownedSelection(this); return owned ? Array.from(owned.range.getClientRects()) : []; },
+      error => this.reportRendererError(error, "selection"));
     this.maskGeometry = null;
     this.maskField = null;
     this.maskTexture = null;
@@ -334,6 +333,8 @@ export class ShaderFont extends HTMLElement {
     this.inViewport = false;
     this.motionQuery = matchMedia("(prefers-reduced-motion: reduce)");
     this.onMaterialPlaybackChange = () => {
+      if (document.hidden) this.selectionIndicator.clear();
+      else if (this.gesture.tag === GestureTag.ACTIVE || this.gesture.tag === GestureTag.SELECTED) this.captureSelectionRegions();
       this.syncMaterialPlayback();
       this.syncRevealPlayback();
     };
@@ -341,6 +342,8 @@ export class ShaderFont extends HTMLElement {
       const entry = entries.find(entry => entry.target === this);
       if (!entry) return;
       this.inViewport = entry.isIntersecting;
+      if (!entry.isIntersecting) this.selectionIndicator.clear();
+      else if (this.gesture.tag === GestureTag.ACTIVE || this.gesture.tag === GestureTag.SELECTED) this.captureSelectionRegions();
       this.syncMaterialPlayback();
       this.syncRevealPlayback();
     });
@@ -455,7 +458,7 @@ export class ShaderFont extends HTMLElement {
     }
     this.dataset.shader = this.shaderPreset();
     this.dataset.dragEffect = this.dragEffect();
-    this.dataset.renderer = this.renderer();
+    this.dataset.renderer = this.rendererKind();
     this.dataset.revealEffect = this.getAttribute("reveal-effect") ?? SHADER_FONT_DEFAULTS.revealEffect;
     const speed = numberAttribute(this, "speed", SHADER_FONT_DEFAULTS.speed, 0, 4);
     this.style.setProperty("--sf-scan-duration", `${1.8 / Math.max(0.01, speed)}s`);
@@ -466,7 +469,7 @@ export class ShaderFont extends HTMLElement {
     return resolveShaderPreset(this.getAttribute("shader"));
   }
 
-  interaction() {
+  interactionMode() {
     const value = this.getAttribute("interaction") ?? "select";
     if (value === "none") return "none";
     const effect = this.dragEffect();
@@ -479,7 +482,7 @@ export class ShaderFont extends HTMLElement {
     return resolveDragEffect(this.getAttribute("drag-effect"), this.getAttribute("interaction") ?? "select");
   }
 
-  renderer() {
+  rendererKind() {
     return this.getAttribute("renderer") ?? SHADER_FONT_DEFAULTS.renderer;
   }
 
@@ -520,7 +523,7 @@ export class ShaderFont extends HTMLElement {
     this.publishProgress(0, DragEffect.DISSOLVE);
     this.dispatchEvent(new CustomEvent("shaderfont-error", {
       bubbles: true,
-      detail: { renderer: this.renderer(), code: this.dataset.rendererError, message: error.message, phase }
+      detail: { renderer: this.rendererKind(), code: this.dataset.rendererError, message: error.message, phase }
     }));
   }
 
@@ -588,7 +591,7 @@ export class ShaderFont extends HTMLElement {
       const { width, height, aspect } = this.materialGeometry;
       if (!this.materialSurface || this.materialSurface.canvas.width !== width || this.materialSurface.canvas.height !== height) {
         this.materialSurface?.dispose();
-        this.materialSurface = createMaterialRenderer(this.renderer(), width, height, error => this.reportRendererError(error, "material"));
+        this.materialSurface = createMaterialRenderer(this.rendererKind(), width, height, error => this.reportRendererError(error, "material"));
       }
       if (!this.materialInput) {
         const computed = getComputedStyle(this);
@@ -724,7 +727,7 @@ export class ShaderFont extends HTMLElement {
       const { width, height } = this.revealField;
       if (!this.revealSurface || this.revealSurface.canvas.width !== width || this.revealSurface.canvas.height !== height) {
         this.revealSurface?.dispose();
-        this.revealSurface = createRevealRenderer(this.renderer(), width, height, error => this.reportRendererError(error, "reveal"));
+        this.revealSurface = createRevealRenderer(this.rendererKind(), width, height, error => this.reportRendererError(error, "reveal"));
       }
       const images = this.revealSurface.render(this.revealField, progress);
       this.revealMaskImage = `url("${images.mask}")`;
@@ -757,7 +760,7 @@ export class ShaderFont extends HTMLElement {
     this.publishProgress(0, this.dragEffect());
   }
 
-  flow() {
+  selectionFlow() {
     const value = this.getAttribute("flow") ?? "reading";
     if (value === "random" || value === "ltr" || value === "rtl") return value;
     return "reading";
@@ -773,7 +776,7 @@ export class ShaderFont extends HTMLElement {
   }
 
   onPointerDown(event) {
-    const mode = this.interaction();
+    const mode = this.interactionMode();
     if (mode === "none" || (event.pointerType === "mouse" && event.button !== 0)) return;
     if (this.gesture.tag === GestureTag.PRESSED || this.gesture.tag === GestureTag.ACTIVE) return;
     const effect = this.dragEffect();
@@ -803,7 +806,7 @@ export class ShaderFont extends HTMLElement {
   }
 
   onDragStart(event) {
-    if (this.interaction() === "select") event.preventDefault();
+    if (this.interactionMode() === "select") event.preventDefault();
   }
 
   onPointerMove(event) {
@@ -869,6 +872,7 @@ export class ShaderFont extends HTMLElement {
   }
 
   onSelectionChange() {
+    if (!ownedSelection(this)) this.selectionIndicator.clear();
     if (this.gesture.tag === GestureTag.ACTIVE && this.gesture.effect === DragEffect.DISSOLVE) {
       this.selectionDirty = true;
       this.startDissolveClock();
@@ -951,8 +955,13 @@ export class ShaderFont extends HTMLElement {
   }
 
   captureSelectionRegions() {
-    const regions = selectionGeometry(this);
-    if (!regions) return false;
+    const geometry = selectionGeometry(this);
+    if (!geometry) { this.selectionIndicator.clear(); return false; }
+    const { regions, viewportRects } = geometry;
+    if (this.interactionMode() === "select" && this.inViewport && !document.hidden) {
+      try { this.selectionIndicator.update(viewportRects); }
+      catch (error) { this.reportRendererError(error, "selection"); return false; }
+    }
     if (sameRegions(this.selectionRegions, regions)) return true;
     this.selectionRegions = regions;
     this.maskField = null;
@@ -961,6 +970,7 @@ export class ShaderFont extends HTMLElement {
   }
 
   clearSelectionRegions() {
+    this.selectionIndicator.clear();
     if (this.selectionRegions.length > 0) {
       this.selectionRegions = [];
       this.maskField = null;
@@ -997,7 +1007,7 @@ export class ShaderFont extends HTMLElement {
     });
     if (!this.maskSurface || this.maskSurface.canvas.width !== width || this.maskSurface.canvas.height !== height) {
       this.disposeMaskRenderer();
-      this.maskSurface = createMaskRenderer(this.renderer(), width, height, error => this.reportRendererError(error));
+      this.maskSurface = createMaskRenderer(this.rendererKind(), width, height, error => this.reportRendererError(error));
       this.dataset.rendererStatus = "ready";
     }
     return this.maskField;
@@ -1015,7 +1025,7 @@ export class ShaderFont extends HTMLElement {
     const rawLineHeight = Number.parseFloat(computed.lineHeight);
     const rawFontSize = Number.parseFloat(computed.fontSize) || 16;
     const lineHeight = Math.min(height, Math.max(1, (Number.isFinite(rawLineHeight) ? rawLineHeight : rawFontSize * 1.2) * scaleY));
-    const flow = this.flow();
+    const flow = this.selectionFlow();
     const direction = flow === "rtl"
       ? "rtl"
       : flow === "ltr"
@@ -1213,6 +1223,7 @@ export class ShaderFont extends HTMLElement {
   }
 
   restoreDissolve() {
+    this.selectionIndicator.clear();
     this.stopDissolveClock();
     const initial = this.dissolve;
     this.cancelRestore();

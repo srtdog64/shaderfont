@@ -64,6 +64,14 @@ for (const name of ["primary", "secondary", "accent"]) {
 
 WebGL을 쓸 수 없거나 컨텍스트를 잃으면 효과를 멈추고 일반 글자를 보이게 복구하며 `shaderfont-error` 이벤트를 보냅니다. 이벤트의 `detail`에는 `renderer`, `code`, `message`, 실패한 `phase`가 들어갑니다. 자동으로 Canvas 2D로 바꾸거나 재시도하지 않습니다. 렌더러를 바꾸거나 `resetPosition()`을 호출해 다시 시도할 수 있습니다.
 
+### 선택 표시와 프레임워크 속성 (0.5.1)
+
+선택 중에는 일반 DOM 글자와 같은 시스템 `Highlight`·`HighlightText` 색을 사용합니다. 고정된 파란색 팔레트를 추가하지 않습니다. 이전 디졸브 스타일은 선택 배경과 글자 색을 투명하게 만들어 범위를 알아보기 어려웠습니다. 글자 마스크와 함께 선택 배경까지 지워지는 문제는 `selection-indicator.js`가 소유한 빈 표시 레이어로 분리했습니다. 실제 Range의 줄별 사각형만 표시하고 글자나 HTML을 복제하지 않습니다. 선택 해제·취소·편집·옵션 전환·화면 밖·분리 시 제거하며, 선택이 그대로 남아 있을 때는 프레임을 반복 예약하지 않습니다. 스크롤·크기 변경은 활성 표시의 이벤트에서만 갱신합니다.
+
+이 변경의 목표는 선택 범위를 읽을 수 있게 유지하는 것입니다. 우선순위는 원문·복사 보호 → 범위 표시 → 기존 효과 유지이며, 선택의 정본은 브라우저 Range입니다. 마지막 소비자는 표시 레이어와 기존 마스크이며 전체 문서 탐색·텍스트 복제·선택을 잃었을 때 전체 영역 강조는 금지합니다. 선택 완료 후 마스크가 100% 지워져도 실제 범위 표시가 남는지, 선택 해제와 연결 해제 후 표시·스크롤 리스너가 사라지는지가 반증 검사입니다.
+
+`renderer`·`flow`·`interaction` HTML 속성과 내부 메서드 이름도 분리했습니다. 프레임워크가 같은 이름의 인스턴스 프로퍼티를 쓰더라도 속성 판독 함수를 덮어쓸 수 없습니다. 옵션의 정본은 계속 HTML 속성이며 프로퍼티와 속성을 병렬로 읽거나 값 종류에 따라 메서드를 추측하는 호환 경로를 만들지 않습니다.
+
 ## 자동 등장
 
 `reveal-effect="burn"`은 드래그 없이 글자를 나타나게 합니다. 노이즈 경계를 따라 글자가 드러나고, 새로 나타나는 가장자리만 흰색·노랑·주황으로 빛납니다. [Code Avarice의 burning-edges 설명](https://www.codeavarice.com/dev-blog/tutorial-burning-edges-dissolve-shader-in-unity)의 노이즈 임계값과 좁은 발광 띠 방식을 참고했습니다. Unity 코드나 에셋을 넣은 것은 아닙니다.
@@ -143,6 +151,7 @@ src/
   material-core.js        재질 수식과 CPU / GLSL 대조 커널
   material-renderer.js    재질 이미지 렌더링
   mask-renderer.js        Canvas 2D / WebGL 2 알파 마스크
+  selection-indicator.js  마스크 밖의 실제 선택 범위와 활성 스크롤 리스너
   reveal-core.js          자동 등장 시간, 노이즈 경계와 발광 띠
   reveal-renderer.js      Canvas 2D / WebGL 2 등장 마스크·경계 색
   webgl-surface.js        셰이더 컴파일과 GPU 자원 수명
@@ -170,7 +179,7 @@ WebGL에서도 CSS 마스크로 넘기는 PNG 변환은 남습니다. 글자가 
 ```sh
 npm pack --pack-destination /path/to/makonea/vendor/shaderfont
 # Makonea의 apps/web에서 실행
-pnpm add ../../vendor/shaderfont/shaderfont-0.5.0.tgz
+pnpm add ../../vendor/shaderfont/shaderfont-0.5.1.tgz
 ```
 
 ```text
@@ -181,6 +190,8 @@ npm run demo
 데모는 `http://127.0.0.1:8766/`에서 열립니다. `/test/browser/renderers.html`은 디졸브 알파를, `/test/browser/materials.html`은 재질 RGB를, `/test/browser/reveal.html`은 등장 알파와 경계 색을 대조합니다. `/test/browser/inline.html`은 일반 문장과 같은 줄바꿈 위치인지 비교하고, 좁은 폭에서 부분 디졸브·복구·자동 등장을 확인하는 검증 화면입니다. 선택·복구·컨텍스트 손실도 확인합니다. 각 검사는 보이는 탭에서 하나씩 실행합니다. 단위 테스트만으로 GPU 실행을 확인했다고 보지는 않습니다.
 
 2026-10-13의 0.5.0 검증에서는 `npm run check` 69개가 통과했습니다. 로컬 Codex 인앱 브라우저에서 디졸브·재질·자동 등장 페이지의 19개 검사도 통과했습니다. Canvas/WebGL 디졸브 알파 528,948픽셀의 최대 차이는 1, 재질 RGB 161,568채널의 최대 차이는 1, 등장 알파·발광 색 28개 샘플의 최대 차이는 0이었습니다. 350px·240px 본문 폭에서 일반 문장과 효과 문장의 첫/끝 글자 위치가 같고, 줄바꿈 후 부분 디졸브·선택 유지·복구를 화면으로 확인했습니다. 이는 이 브라우저 환경의 결과이며 다른 브라우저·기기나 여러 문장을 동시에 실행할 때의 성능을 검증한 것은 아닙니다.
+
+0.5.1의 후속 단위 검사 75개는 선택 표시의 수명·클리핑·스크롤 정리·실패 시 복구와 프레임워크 프로퍼티/메서드 충돌을 포함해 통과했습니다. 로컬 브라우저에서는 선택 글자가 완전히 지워진 뒤에도 실제 두 줄의 선택 표시가 남고, 선택 해제 후 표시와 마스크가 없어지는 것을 확인했습니다. 240px 폭에서도 일반 문장과 같은 줄바꿈 위치를 유지했습니다. 이는 합성 제스처와 실제 브라우저 Range의 확인이며 모든 포인터·기기에서 수동 드래그를 검증한 결과는 아닙니다.
 
 ## 공개 배포 전
 
