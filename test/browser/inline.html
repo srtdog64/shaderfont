@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Shaderfont inline layout checks</title>
+<style>
+  body { color: #172033; background: white; font: 18px/1.7 system-ui; margin: 24px; }
+  .sample { width: 350px; max-width: 100%; border: 1px solid #cbd5e1; padding: 16px; margin: 16px 0; }
+  .dark { color: white; background: #020617; }
+  button { font: inherit; margin: 4px; }
+  pre { font: 13px/1.4 monospace; white-space: pre-wrap; }
+</style>
+<h1>밝은 배경 · 인라인 줄바꿈 검증</h1>
+<p>아래 두 문장의 첫 글자와 끝 글자는 같은 위치에 있어야 합니다.</p>
+<div class="sample" id="plain">앞쪽 일반 글자. <span>이 효과 문장은 첫 줄의 남은 공간부터 이어지고, 다음 줄로 자연스럽게 줄바꿈되어야 합니다.</span> 뒤쪽 일반 글자.</div>
+<div class="sample" id="effect">앞쪽 일반 글자. <shader-font speed="0" dissolve-ms="200" restore-ms="100">이 효과 문장은 첫 줄의 남은 공간부터 이어지고, 다음 줄로 자연스럽게 줄바꿈되어야 합니다.</shader-font> 뒤쪽 일반 글자.</div>
+<div class="sample dark">어두운 배경. <shader-font id="dark" speed="0" drag-effect="none">색상 프리셋도 따로 고를 수 있습니다.</shader-font></div>
+<button id="select">가운데 일부만 디졸브</button>
+<button id="clear">선택 해제 · 복구</button>
+<button id="narrow">240px 폭에서 다시 검사</button>
+<button id="reveal">자동 등장 한 번</button>
+<pre id="results">Running</pre>
+<script type="module">
+import { registerShaderFont, SHADER_FONT_PALETTES } from "../../src/index.js";
+const registered = await registerShaderFont();
+if (!registered.ok) throw new Error(registered.error);
+const host = document.querySelector("#effect shader-font");
+const dark = document.querySelector("#dark");
+const palette = SHADER_FONT_PALETTES.find(p => p.name === "dark");
+for (const name of ["primary", "secondary", "accent"]) dark.setAttribute(name, palette[name]);
+const output = document.querySelector("#results");
+function positions(element) {
+  const parent = element.parentElement.getBoundingClientRect();
+  return [0, element.textContent.length - 1].map(offset => {
+    const range = document.createRange();
+    range.setStart(element.firstChild, offset);
+    range.setEnd(element.firstChild, offset + 1);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.left - parent.left, y: rect.top - parent.top };
+  });
+}
+function checkLayout() {
+  const plain = positions(document.querySelector("#plain span"));
+  const effect = positions(host);
+  const same = effect.every((p, i) => Math.abs(p.x - plain[i].x) < 0.1 && Math.abs(p.y - plain[i].y) < 0.1);
+  const style = getComputedStyle(host);
+  output.textContent = JSON.stringify({ status: same && style.display === "inline" ? "pass" : "fail",
+    plain, effect, fragments: host.getClientRects().length, display: style.display,
+    blend: style.backgroundBlendMode, filter: style.filter, selected: getSelection().toString(),
+    state: host.dataset.shaderFontState, mask: host.style.maskImage !== "none" && !!host.style.maskImage }, null, 2);
+}
+document.querySelector("#select").addEventListener("click", () => {
+  const range = document.createRange();
+  const start = host.textContent.indexOf("다음 줄로");
+  range.setStart(host.firstChild, start);
+  range.setEnd(host.firstChild, start + "다음 줄로 자연스럽게".length);
+  const rect = range.getBoundingClientRect();
+  const pointer = { pointerId: 1, pointerType: "mouse", button: 0,
+    clientX: rect.left, clientY: rect.top, preventDefault() {} };
+  host.onPointerDown(pointer);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  host.onPointerMove({ ...pointer, clientX: rect.left + 60 });
+  host.onPointerEnd({ ...pointer, type: "pointerup" });
+  setTimeout(checkLayout, 300);
+});
+document.querySelector("#clear").addEventListener("click", () => {
+  getSelection().removeAllRanges();
+  setTimeout(checkLayout, 250);
+});
+document.querySelector("#narrow").addEventListener("click", () => {
+  getSelection().removeAllRanges();
+  for (const sample of document.querySelectorAll(".sample")) sample.style.width = "240px";
+  setTimeout(checkLayout, 250);
+});
+document.querySelector("#reveal").addEventListener("click", () => {
+  getSelection().removeAllRanges();
+  host.setAttribute("reveal-ms", "1800");
+  host.setAttribute("reveal-interval-ms", "0");
+  host.setAttribute("reveal-effect", "burn");
+  host.restartReveal();
+});
+checkLayout();
+</script>
+</html>

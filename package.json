@@ -1,6 +1,6 @@
 {
   "name": "shaderfont",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Animated materials and selection effects on DOM text, with Canvas 2D and WebGL renderers.",
@@ -13,7 +13,7 @@
   "files": ["src", "README.md"],
   "sideEffects": ["./src/shader-font.js"],
   "scripts": {
-    "check": "node --check src/core.js && node --check src/index.js && node --check src/options.js && node --check src/presets.js && node --check src/webgl-surface.js && node --check src/material-core.js && node --check src/material-renderer.js && node --check src/mask-renderer.js && node --check src/reveal-core.js && node --check src/reveal-renderer.js && node --check src/shader-font-element.js && node --test",
+    "check": "node --check src/core.js && node --check src/index.js && node --check src/options.js && node --check src/presets.js && node --check src/paint-layout.js && node --check src/webgl-surface.js && node --check src/material-core.js && node --check src/material-renderer.js && node --check src/mask-renderer.js && node --check src/reveal-core.js && node --check src/reveal-renderer.js && node --check src/shader-font-element.js && node --test",
     "demo": "node tools/serve.mjs"
   }
 }

@@ -26,6 +26,7 @@ import { createMaterialRenderer } from "./material-renderer.js";
 import { rendererError } from "./webgl-surface.js";
 import { createRevealField, revealSample } from "./reveal-core.js";
 import { createRevealRenderer } from "./reveal-renderer.js";
+import { createPaintLayout, projectSelectionRects } from "./paint-layout.js";
 
 const STYLE_ID = "shader-font-component-styles";
 const MASK_STEPS = 144;
@@ -36,9 +37,9 @@ const DEFAULT_RESTORE_MS = 1800;
 const SHAKE_RESTORE_MS = 180;
 const ELASTIC_RESTORE_MS = 900;
 const DEFAULT_COLORS = Object.freeze({
-  primary: "#69efff",
-  secondary: "#ff946a",
-  accent: "#fff4bd"
+  primary: SHADER_FONT_DEFAULTS.primary,
+  secondary: SHADER_FONT_DEFAULTS.secondary,
+  accent: SHADER_FONT_DEFAULTS.accent
 });
 
 function ensureStyles() {
@@ -65,7 +66,9 @@ function ensureStyles() {
       --_sf-primary: ${DEFAULT_COLORS.primary};
       --_sf-secondary: ${DEFAULT_COLORS.secondary};
       --_sf-accent: ${DEFAULT_COLORS.accent};
-      display: inline-block;
+      display: inline;
+      box-decoration-break: slice;
+      -webkit-box-decoration-break: slice;
       max-width: 100%;
       vertical-align: baseline;
       color: transparent;
@@ -74,10 +77,10 @@ function ensureStyles() {
         var(--sf-burn-edge-image, none),
         repeating-linear-gradient(
           180deg,
-          color-mix(in srgb, var(--sf-accent, var(--_sf-accent)) 96%, transparent) 0 2px,
-          color-mix(in srgb, var(--sf-secondary, var(--_sf-secondary)) 72%, transparent) 2px 4px,
-          color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 44%, transparent) 4px 5px,
-          color-mix(in srgb, var(--sf-accent, var(--_sf-accent)) 88%, transparent) 5px 7px
+          var(--sf-accent, var(--_sf-accent)) 0 2px,
+          var(--sf-secondary, var(--_sf-secondary)) 2px 4px,
+          var(--sf-primary, var(--_sf-primary)) 4px 5px,
+          var(--sf-accent, var(--_sf-accent)) 5px 7px
         ),
         linear-gradient(
           135deg,
@@ -89,14 +92,11 @@ function ensureStyles() {
       background-size: 100% 100%, 100% 7px, 100% 100%;
       background-clip: text;
       -webkit-background-clip: text;
-      background-blend-mode: screen;
+      background-blend-mode: normal;
       text-shadow:
         -.018em 0 color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 70%, transparent),
         .018em 0 color-mix(in srgb, var(--sf-secondary, var(--_sf-secondary)) 62%, transparent);
-      filter:
-        drop-shadow(0 0 .035em color-mix(in srgb, var(--sf-accent, var(--_sf-accent)) 94%, transparent))
-        drop-shadow(0 0 .16em color-mix(in srgb, var(--sf-secondary, var(--_sf-secondary)) 38%, transparent))
-        drop-shadow(0 0 .28em color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 24%, transparent));
+      filter: none;
       transform:
         translate3d(var(--sf-x), var(--sf-y), 0)
         translate3d(var(--sf-effect-x), var(--sf-effect-y), 0)
@@ -116,13 +116,14 @@ function ensureStyles() {
         shader-font-outline-jitter var(--sf-jitter-duration, 1.35s) steps(1, end) infinite;
     }
 
-    shader-font[block], shaderfont[block] { display: block; }
     shader-font[data-drag-effect="move"], shaderfont[data-drag-effect="move"],
     shader-font[data-drag-effect="shake"], shaderfont[data-drag-effect="shake"],
     shader-font[data-drag-effect="elastic"], shaderfont[data-drag-effect="elastic"] {
+      display: inline-block;
       cursor: grab;
       touch-action: none;
     }
+    shader-font[block], shaderfont[block] { display: block; }
     shader-font.is-dragging, shaderfont.is-dragging { cursor: grabbing; user-select: none; }
     shader-font.is-effect-active, shader-font.is-dragging {
       will-change: transform, mask-image;
@@ -266,16 +267,16 @@ function ownedSelection(element) {
 function selectionGeometry(element) {
   const owned = ownedSelection(element);
   if (!owned) return null;
-  const host = element.getBoundingClientRect();
-  const rects = Array.from(owned.range.getClientRects(), rect => {
-    const left = clamp(rect.left - host.left, 0, host.width);
-    const top = clamp(rect.top - host.top, 0, host.height);
-    const right = clamp(rect.right - host.left, 0, host.width);
-    const bottom = clamp(rect.bottom - host.top, 0, host.height);
-    return { x: left, y: top, width: right - left, height: bottom - top };
-  }).filter(rect => rect.width > 0.25 && rect.height > 0.25);
+  const rects = projectSelectionRects(measurePaintLayout(element), Array.from(owned.range.getClientRects()));
   if (rects.length === 0) return null;
   return rects;
+}
+
+function measurePaintLayout(element) {
+  const bounds = element.getBoundingClientRect();
+  const computed = getComputedStyle(element);
+  const inline = computed.display === "inline";
+  return createPaintLayout(bounds, inline ? Array.from(element.getClientRects()) : [], inline, computed.direction);
 }
 
 function sameRegions(left, right) {
@@ -288,7 +289,7 @@ function sameRegions(left, right) {
 
 export class ShaderFont extends HTMLElement {
   static get observedAttributes() {
-    return ["shader", "renderer", "primary", "secondary", "accent", "speed", "scale", "resolution", "softness", "flow", "roughness", "dissolve-ms", "restore-ms", "interaction", "drag-effect", "reveal-effect", "reveal-ms", "reveal-interval-ms"];
+    return ["shader", "renderer", "primary", "secondary", "accent", "speed", "scale", "resolution", "softness", "flow", "roughness", "dissolve-ms", "restore-ms", "interaction", "drag-effect", "block", "reveal-effect", "reveal-ms", "reveal-interval-ms"];
   }
 
   constructor() {
@@ -377,6 +378,10 @@ export class ShaderFont extends HTMLElement {
     document.addEventListener("selectionchange", this.onSelectionChange);
     window.addEventListener("blur", this.onWindowBlur);
     this.resizeObserver.observe(this);
+    // Non-replaced inline boxes do not emit useful ResizeObserver sizes.
+    let container = this.parentElement;
+    while (container && ["inline", "contents"].includes(getComputedStyle(container).display)) container = container.parentElement;
+    if (container) this.resizeObserver.observe(container);
     this.textObserver.observe(this, { childList: true, characterData: true, subtree: true });
     document.addEventListener("visibilitychange", this.onMaterialPlaybackChange);
     this.motionQuery.addEventListener("change", this.onMaterialPlaybackChange);
@@ -417,6 +422,11 @@ export class ShaderFont extends HTMLElement {
     this.applyAttributes();
     if (oldValue !== newValue && (name === "drag-effect" || name === "interaction")) {
       this.resetInteractionForOptionChange();
+    }
+    if (oldValue !== newValue && ["drag-effect", "block"].includes(name)) {
+      this.invalidateMask();
+      this.invalidateMaterial();
+      this.invalidateReveal();
     }
     if (oldValue !== newValue && name === "renderer") {
       this.resetInteractionForOptionChange();
@@ -571,7 +581,7 @@ export class ShaderFont extends HTMLElement {
   paintMaterial() {
     try {
       if (!this.materialGeometry) {
-        const rect = this.getBoundingClientRect();
+        const rect = measurePaintLayout(this);
         const resolution = numberAttribute(this, "resolution", SHADER_FONT_DEFAULTS.resolution, 0.25, 1);
         this.materialGeometry = { ...materialDimensions(rect.width, rect.height, resolution), aspect: Math.max(1, rect.width) / Math.max(1, rect.height) };
       }
@@ -706,7 +716,7 @@ export class ShaderFont extends HTMLElement {
   paintReveal(progress) {
     try {
       if (!this.revealField) {
-        const rect = this.getBoundingClientRect();
+        const rect = measurePaintLayout(this);
         const resolution = numberAttribute(this, "resolution", SHADER_FONT_DEFAULTS.resolution, 0.25, 1);
         const { width, height } = materialDimensions(rect.width, rect.height, resolution);
         this.revealField = createRevealField(width, height, hashText(this.textContent ?? ""));
@@ -994,7 +1004,7 @@ export class ShaderFont extends HTMLElement {
   }
 
   measureMask() {
-    const rect = this.getBoundingClientRect();
+    const rect = measurePaintLayout(this);
     const scale = Math.min(1, 768 / Math.max(1, rect.width), 384 / Math.max(1, rect.height),
       Math.sqrt(MAX_MASK_PIXELS / Math.max(1, rect.width * rect.height)));
     const width = Math.max(1, Math.floor(rect.width * scale));

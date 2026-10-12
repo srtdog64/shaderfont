@@ -1,6 +1,12 @@
 import { SHADER_PRESETS } from "./presets.js";
 export { SHADER_PRESETS } from "./presets.js";
 
+/** Background choice is explicit; never guess a consumer's surrounding CSS. */
+export const SHADER_FONT_PALETTES = Object.freeze([
+  Object.freeze({ name: "light", label: "밝은 배경", primary: "#075985", secondary: "#9f1239", accent: "#5b21b6" }),
+  Object.freeze({ name: "dark", label: "어두운 배경", primary: "#69efff", secondary: "#ff946a", accent: "#fff4bd" })
+]);
+
 /** Persisted options contain values, never CSS expressions or arbitrary HTML. */
 export const SHADER_FONT_DEFAULTS = Object.freeze({
   shader: "hologram",
@@ -13,9 +19,9 @@ export const SHADER_FONT_DEFAULTS = Object.freeze({
   revealEffect: "none",
   revealMs: 1800,
   revealIntervalMs: 5000,
-  primary: "#69efff",
-  secondary: "#ff946a",
-  accent: "#fff4bd",
+  primary: SHADER_FONT_PALETTES[0].primary,
+  secondary: SHADER_FONT_PALETTES[0].secondary,
+  accent: SHADER_FONT_PALETTES[0].accent,
   flow: "reading",
   roughness: 0.26,
   dissolveMs: 2400,

@@ -1,4 +1,4 @@
-export { SHADER_FONT_DEFAULTS, SHADER_PRESETS, parseShaderFontOptions, shaderFontAttributes } from "./options.js";
+export { SHADER_FONT_DEFAULTS, SHADER_FONT_PALETTES, SHADER_PRESETS, parseShaderFontOptions, shaderFontAttributes } from "./options.js";
 
 let registration;
 

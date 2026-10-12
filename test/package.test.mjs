@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { SHADER_FONT_DEFAULTS, parseShaderFontOptions, registerShaderFont, shaderFontAttributes } from "shaderfont";
+import { SHADER_FONT_DEFAULTS, SHADER_FONT_PALETTES, parseShaderFontOptions, registerShaderFont, shaderFontAttributes } from "shaderfont";
 
 test("the package imports without browser globals and refuses server registration", async () => {
   assert.equal(typeof globalThis.HTMLElement, "undefined");
@@ -48,4 +48,31 @@ test("unsafe colors, unsupported effects and invalid timings fail explicitly", (
     { roughness: 1 }, { roughness: NaN }, { dissolveMs: 0 }, { restoreMs: Infinity }, { dissolveMs: "2400" }]) {
     assert.equal(parseShaderFontOptions(input).ok, false, JSON.stringify(input));
   }
+});
+
+function luminance(hex) {
+  const channels = [1, 3, 5].map(offset => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255)
+    .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+
+test("package-owned palettes have explicit backgrounds and legible base colors", () => {
+  assert.ok(Object.isFrozen(SHADER_FONT_PALETTES));
+  for (const palette of SHADER_FONT_PALETTES) {
+    assert.ok(Object.isFrozen(palette));
+    const background = luminance(palette.name === "light" ? "#ffffff" : "#020617");
+    for (const name of ["primary", "secondary", "accent"]) {
+      const ink = luminance(palette[name]);
+      assert.ok((Math.max(background, ink) + 0.05) / (Math.min(background, ink) + 0.05) >= 4.5,
+        `${palette.name} ${name} has low contrast`);
+    }
+  }
+  assert.equal(SHADER_FONT_DEFAULTS.primary, SHADER_FONT_PALETTES[0].primary);
+});
+
+test("new defaults never rewrite explicit colors stored by older consumers", () => {
+  const legacy = SHADER_FONT_PALETTES.find(p => p.name === "dark");
+  const options = parseShaderFontOptions(legacy);
+  assert.equal(options.ok, true);
+  for (const name of ["primary", "secondary", "accent"]) assert.equal(options.value[name], legacy[name]);
 });

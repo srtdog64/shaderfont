@@ -21,6 +21,22 @@ DOM 텍스트에 움직이는 재질, 드래그 효과, 자동 등장을 붙이�
 
 재질은 글자 안에서만 보입니다. SVG 글자나 캔버스 텍스트를 겹치는 대신, 브라우저가 조판한 글자에 `background-clip: text`를 적용합니다. 홀로그램과 이동·떨림·탄성은 CSS가 처리하며, `canvas2d`를 골라도 브라우저의 GPU 합성까지 끄는 것은 아닙니다.
 
+## 가독성과 인라인 배치 (0.5.0)
+
+밝은 문서 배경을 기본으로 짙은 파랑·빨강·보라 색상을 사용합니다. 홀로그램 스캔라인은 불투명 색으로 그리고, 밝기를 더하던 `screen` 합성과 넓은 발광 필터를 제거했습니다. `SHADER_FONT_PALETTES`에는 `light`와 `dark`가 있으며, 어두운 배경에서는 `dark`의 색상을 명시적으로 지정할 수 있습니다. 배경을 추측하거나 저장된 색상을 자동으로 바꾸지는 않습니다. 기존 `primary`·`secondary`·`accent` 값과 CSS 변수는 그대로 우선합니다.
+
+```js
+import { SHADER_FONT_PALETTES } from "shaderfont/options";
+const palette = SHADER_FONT_PALETTES.find(p => p.name === "dark");
+for (const name of ["primary", "secondary", "accent"]) {
+  element.setAttribute(name, palette[name]);
+}
+```
+
+`none`과 `dissolve`는 일반 인라인 텍스트처럼 앞 문장의 남은 공간부터 이어지고 줄 안에서 나뉩니다. 이동·떨림·탄성은 요소 전체를 변형하므로 `inline-block`을 유지하고, `block` 속성은 명시적 블록 배치를 유지합니다. CSS가 줄별 조각에 장식을 나누어 그리는 좌표를 `paint-layout.js`가 소유합니다. 선택 Range의 실제 사각형을 이 장식 띠에 투영하며, 디졸브·재질·자동 등장 모두 같은 배치를 사용합니다. 부모의 크기 변경도 관찰해 줄바꿈이 바뀌면 준비된 이미지와 선택 위치를 무효화합니다.
+
+이 변경의 우선순위는 원문과 선택 보존 → 선택 밖 글자 보호 → 자연스러운 줄바꿈 → 효과입니다. 마지막 소비자는 브라우저의 인라인 장식·마스크 합성입니다. 인라인 조각의 합을 여러 줄 경계 사각형으로 대신 계산하거나, 선택 위치를 잃었을 때 전체 글자를 지우는 경로는 허용하지 않습니다. 검증은 조각 좌표·RTL·빈 선택 테스트와 실제 브라우저의 일반 문장/효과 문장 위치 대조, 부분 디졸브와 복구입니다. 색상 테스트는 기본 팔레트의 대비만 확인하며, 임의 색상이나 모든 애니메이션 프레임의 접근성을 보장하지 않습니다.
+
 ## 재질
 
 홀로그램에 여섯 재질을 더했습니다. 어떤 재질이든 드래그 효과는 따로 고릅니다.
@@ -80,9 +96,9 @@ WebGL을 쓸 수 없거나 컨텍스트를 잃으면 효과를 멈추고 일반 
 | `reveal-effect` | `none`, `burn`, 드래그와 별개인 자동 등장 | `none` |
 | `reveal-ms` | `200`~`10000`, 등장 시간(ms) | `1800` |
 | `reveal-interval-ms` | `0`~`60000`, 등장 완료 후 반복 대기(ms), `0`은 한 번만 | `5000` |
-| `primary` | 추가 재질은 6자리 hex, 홀로그램은 CSS 색상 | `#69efff` |
-| `secondary` | 위와 같음 | `#ff946a` |
-| `accent` | 위와 같음 | `#fff4bd` |
+| `primary` | 추가 재질은 6자리 hex, 홀로그램은 CSS 색상 | `#075985` |
+| `secondary` | 위와 같음 | `#9f1239` |
+| `accent` | 위와 같음 | `#5b21b6` |
 | `flow` | `reading`, `ltr`, `rtl`, `random` | `reading` |
 | `roughness` | `0`~`0.48`, 침식 경계의 폭 | `0.26` |
 | `dissolve-ms` | `200`~`10000`, 사라지는 시간(ms) | `2400` |
@@ -121,6 +137,7 @@ src/
   options.js              저장용 옵션 검증과 HTML 속성 변환
   shader-font.js          스크립트 등록과 이전 태그 호환
   shader-font-element.js  DOM, 선택 위치, 제스처와 CSS
+  paint-layout.js         인라인 조각의 장식 좌표와 선택 투영
   core.js                 상태 전이, 노이즈와 침식 시점 계산
   presets.js              재질 목록 (옵션·렌더러·데모가 공유)
   material-core.js        재질 수식과 CPU / GLSL 대조 커널
@@ -153,7 +170,7 @@ WebGL에서도 CSS 마스크로 넘기는 PNG 변환은 남습니다. 글자가 
 ```sh
 npm pack --pack-destination /path/to/makonea/vendor/shaderfont
 # Makonea의 apps/web에서 실행
-pnpm add ../../vendor/shaderfont/shaderfont-0.4.0.tgz
+pnpm add ../../vendor/shaderfont/shaderfont-0.5.0.tgz
 ```
 
 ```text
@@ -161,7 +178,9 @@ npm run check
 npm run demo
 ```
 
-데모는 `http://127.0.0.1:8766/`에서 열립니다. `/test/browser/renderers.html`은 디졸브 알파를, `/test/browser/materials.html`은 재질 RGB를, `/test/browser/reveal.html`은 등장 알파와 경계 색을 대조합니다. 선택·복구·컨텍스트 손실도 확인합니다. 각 검사는 보이는 탭에서 하나씩 실행합니다. 단위 테스트만으로 GPU 실행을 확인했다고 보지는 않습니다.
+데모는 `http://127.0.0.1:8766/`에서 열립니다. `/test/browser/renderers.html`은 디졸브 알파를, `/test/browser/materials.html`은 재질 RGB를, `/test/browser/reveal.html`은 등장 알파와 경계 색을 대조합니다. `/test/browser/inline.html`은 일반 문장과 같은 줄바꿈 위치인지 비교하고, 좁은 폭에서 부분 디졸브·복구·자동 등장을 확인하는 검증 화면입니다. 선택·복구·컨텍스트 손실도 확인합니다. 각 검사는 보이는 탭에서 하나씩 실행합니다. 단위 테스트만으로 GPU 실행을 확인했다고 보지는 않습니다.
+
+2026-10-13의 0.5.0 검증에서는 `npm run check` 69개가 통과했습니다. 로컬 Codex 인앱 브라우저에서 디졸브·재질·자동 등장 페이지의 19개 검사도 통과했습니다. Canvas/WebGL 디졸브 알파 528,948픽셀의 최대 차이는 1, 재질 RGB 161,568채널의 최대 차이는 1, 등장 알파·발광 색 28개 샘플의 최대 차이는 0이었습니다. 350px·240px 본문 폭에서 일반 문장과 효과 문장의 첫/끝 글자 위치가 같고, 줄바꿈 후 부분 디졸브·선택 유지·복구를 화면으로 확인했습니다. 이는 이 브라우저 환경의 결과이며 다른 브라우저·기기나 여러 문장을 동시에 실행할 때의 성능을 검증한 것은 아닙니다.
 
 ## 공개 배포 전
 

@@ -671,3 +671,36 @@ test("a procedural material remains painted through move, shake and elastic gest
     assert.equal(element.restoreTimer, 0);
   }
 });
+
+test("inline selection, material and reveal share the decoration strip coordinates", () => {
+  const computedStyle = globalThis.getComputedStyle;
+  try {
+    globalThis.getComputedStyle = element => ({ ...computedStyle(element), display: "inline" });
+    const element = host();
+    element.getBoundingClientRect = () => ({ left: 10, top: 20, width: 200, height: 80 });
+    element.getClientRects = () => [
+      { left: 110, top: 20, width: 100, height: 30 },
+      { left: 10, top: 70, width: 200, height: 30 }
+    ];
+    const node = { owner: element };
+    element.onPointerDown(pointer("pointerdown"));
+    selection = { rangeCount: 1, isCollapsed: false, anchorNode: node, focusNode: node,
+      getRangeAt: () => ({ getClientRects: () => [{ left: 30, top: 70, right: 80, bottom: 100 }] }),
+      removeAllRanges() { selection = null; } };
+    element.onPointerMove(pointer("pointermove", 70));
+    advance(16); advance(400);
+    assert.deepEqual(element.selectionRegions, [{ x: 120, y: 0, width: 50, height: 30 }]);
+    assert.equal(element.maskField.width, 300);
+    assert.equal(element.maskField.height, 30);
+    element.setAttribute("drag-effect", "none");
+    element.setAttribute("shader", "plasma");
+    advance(16);
+    assert.deepEqual(element.materialGeometry, { width: 150, height: 15, aspect: 10 });
+    element.setAttribute("reveal-effect", "burn");
+    advance(16);
+    assert.equal(element.revealField.width, 150);
+    assert.equal(element.revealField.height, 15);
+  } finally {
+    globalThis.getComputedStyle = computedStyle;
+  }
+});

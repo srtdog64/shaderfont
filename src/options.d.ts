@@ -18,6 +18,9 @@ export type ShaderFontOptions = {
   restoreMs: number;
 };
 export const SHADER_FONT_DEFAULTS: Readonly<ShaderFontOptions>;
+export const SHADER_FONT_PALETTES: ReadonlyArray<Readonly<{
+  name: 'light' | 'dark'; label: string; primary: string; secondary: string; accent: string;
+}>>;
 export const SHADER_PRESETS: ReadonlyArray<Readonly<{ name: ShaderFontOptions['shader']; label: string; id: number }>>;
 export function parseShaderFontOptions(input?: unknown):
   | { ok: true; value: ShaderFontOptions }
