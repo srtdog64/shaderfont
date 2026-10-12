@@ -1,0 +1,11 @@
+{
+  "name": "shaderfont",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sentence-aware hologram text as a native Web Component.",
+  "scripts": {
+    "check": "node --check src/core.js && node --check src/shader-font.js && node --test",
+    "demo": "node tools/serve.mjs"
+  }
+}
