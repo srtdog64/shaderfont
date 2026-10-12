@@ -76,7 +76,7 @@
   <main>
     <div class="eyebrow">DOM typography / sentence-aware dissolve</div>
     <h1>Shaderfont</h1>
-    <p class="intro">실제 DOM 글자를 그대로 편집하면서 디졸브, 이동, 떨림, 고무줄 탄성을 골라 드래그할 수 있습니다. 디졸브의 위치는 선택한 글자, 진행량은 드래그를 유지한 시간이 정합니다.</p>
+    <p class="intro">글자를 선택하고 손을 놓아 보세요. 선택한 부분만 천천히 타들어가며, 바깥을 누르면 다시 나타납니다. 이동, 떨림, 고무줄 효과도 골라 쓸 수 있습니다.</p>
 
     <section class="stage">
       <shader-font
@@ -90,7 +90,7 @@
         primary="#69efff"
         secondary="#ff946a"
         accent="#fff4bd">이 문장은 실제 DOM 텍스트입니다. 직접 고쳐 쓰거나 문장을 드래그해 보세요.</shader-font>
-      <div class="hint"><span id="gesture-hint">글자를 선택하듯 드래그</span> · 현재 상태 <span class="status" id="status">idle / dissolve / 0%</span></div>
+      <div class="hint"><span id="gesture-hint">드래그 후 선택을 해제할 때까지 유지</span> · 현재 상태 <span class="status" id="status">idle / dissolve / 0%</span></div>
     </section>
 
     <section class="controls" aria-label="Shaderfont controls">
@@ -105,16 +105,16 @@
       </label>
       <label>디졸브 흐름
         <select id="flow">
-          <option value="reading">선택 영역 (기본)</option>
+          <option value="reading">읽기 순서 (기본)</option>
           <option value="rtl">오른쪽에서 왼쪽</option>
-          <option value="random">무작위 비교용</option>
+          <option value="random">질감만</option>
         </select>
       </label>
       <label>침식 질감
         <input id="roughness" type="range" min="0" max="0.48" step="0.01" value="0.26">
       </label>
       <label>디졸브 시간(ms)
-        <input id="dissolve-ms" type="number" min="200" max="10000" step="100" value="1800">
+        <input id="dissolve-ms" type="number" min="200" max="10000" step="100" value="2400">
       </label>
       <label>드래그 효과
         <select id="drag-effect">
@@ -137,7 +137,7 @@
   secondary="#ff946a"
   accent="#fff4bd"
   roughness="0.26"
-  dissolve-ms="1800"
+  dissolve-ms="2400"
   restore-ms="1800"&gt;
   안녕하세요
 &lt;/shader-font&gt;</code></pre>
@@ -168,7 +168,7 @@
     const gestureHint = document.querySelector("#gesture-hint");
     const hints = {
       none: "브라우저 기본 선택·편집",
-      dissolve: "글자를 선택하듯 드래그",
+      dissolve: "드래그 후 선택을 해제할 때까지 유지",
       move: "문장을 잡아 원하는 자리로 이동",
       shake: "문장을 잡아 흔들기",
       elastic: "문장을 당겼다가 놓기"

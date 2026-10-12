@@ -6,24 +6,26 @@ import {
   clamp,
   createElasticTransform,
   createErosionField,
-  createMaskAlpha,
+  createMaskField,
   dampedSpringFactor,
   dissolveProgress,
   hashText,
   idleGesture,
+  numberOption,
   pressedGesture,
   resolveDragEffect,
   resolveShaderPreset,
-  restoringGesture
+  renderMaskAlpha,
+  restoringGesture,
+  selectedGesture
 } from "./core.js";
 
 const STYLE_ID = "shader-font-component-styles";
-const MASK_STEPS = 24;
-const MASK_CACHE_LIMIT = 12;
+const MASK_STEPS = 144;
+const MAX_MASK_PIXELS = 131_072;
 const DRAG_THRESHOLD = 5;
-const DEFAULT_DISSOLVE_MS = 1800;
+const DEFAULT_DISSOLVE_MS = 2400;
 const DEFAULT_RESTORE_MS = 1800;
-const RESTORE_HOLD_MS = 420;
 const SHAKE_RESTORE_MS = 180;
 const ELASTIC_RESTORE_MS = 900;
 const DEFAULT_COLORS = Object.freeze({
@@ -104,7 +106,6 @@ function ensureStyles() {
       animation:
         shader-font-scan 1.8s linear infinite,
         shader-font-outline-jitter 1.35s steps(1, end) infinite;
-      will-change: transform, translate, rotate, filter, opacity, text-shadow, -webkit-mask-image;
     }
 
     shader-font[block], shaderfont[block] { display: block; }
@@ -115,6 +116,9 @@ function ensureStyles() {
       touch-action: none;
     }
     shader-font.is-dragging, shaderfont.is-dragging { cursor: grabbing; user-select: none; }
+    shader-font.is-effect-active, shader-font.is-dragging {
+      will-change: transform, mask-image;
+    }
     shader-font[interaction="none"] { pointer-events: none; }
     shader-font[contenteditable]:focus {
       outline: 1px solid color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 38%, transparent);
@@ -138,6 +142,12 @@ function ensureStyles() {
       text-shadow: none;
       filter: none;
       animation: none;
+    }
+
+    shader-font[data-shader="none"][data-drag-effect="dissolve"]::selection {
+      color: currentColor;
+      -webkit-text-fill-color: currentColor;
+      background: transparent;
     }
 
     shader-font[data-drag-effect="none"]::selection,
@@ -189,8 +199,7 @@ function colorOrDefault(element, attribute) {
 }
 
 function numberAttribute(element, name, fallback, minimum, maximum) {
-  const parsed = Number(element.getAttribute(name));
-  return Number.isFinite(parsed) ? clamp(parsed, minimum, maximum) : fallback;
+  return numberOption(element.getAttribute(name), fallback, minimum, maximum);
 }
 
 function ownedSelection(element) {
@@ -224,22 +233,15 @@ function sameRegions(left, right) {
   });
 }
 
-function alphaToMaskUrl(width, height, alpha) {
+function createMaskSurface(width, height) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d", { alpha: true });
   if (!context) throw new Error("shader-font requires a 2D canvas context");
   const image = context.createImageData(width, height);
-  for (let index = 0; index < alpha.length; index += 1) {
-    const offset = index * 4;
-    image.data[offset] = 255;
-    image.data[offset + 1] = 255;
-    image.data[offset + 2] = 255;
-    image.data[offset + 3] = alpha[index];
-  }
-  context.putImageData(image, 0, 0);
-  return `url("${canvas.toDataURL("image/png")}")`;
+  image.data.fill(255);
+  return { canvas, context, image, alpha: new Uint8ClampedArray(width * height) };
 }
 
 export class ShaderFont extends HTMLElement {
@@ -252,22 +254,32 @@ export class ShaderFont extends HTMLElement {
     this.gesture = idleGesture();
     this.offsetX = 0;
     this.offsetY = 0;
+    this.gestureWidth = 120;
     this.dissolve = 0;
     this.effectProgress = 0;
     this.elasticMotion = createElasticTransform(0, 0, 1);
     this.restoreToken = 0;
     this.restoreTimer = 0;
+    this.restoreFrame = 0;
     this.dissolveFrame = 0;
-    this.dissolveStartedAt = 0;
+    this.dissolveStartedAt = null;
+    this.selectionDirty = true;
     this.selectionRegions = [];
-    this.regionRevision = 0;
-    this.maskCache = new Map();
-    this.textureCache = new Map();
+    this.maskGeometry = null;
+    this.maskField = null;
+    this.maskTexture = null;
+    this.maskSurface = null;
+    this.renderedMaskStep = -1;
     this.resizeObserver = new ResizeObserver(() => this.invalidateMask());
-    this.textObserver = new MutationObserver(() => this.invalidateMask());
+    this.textObserver = new MutationObserver(() => {
+      this.resetInteractionForOptionChange();
+      this.invalidateMask();
+    });
     this.onPointerDown = this.onPointerDown.bind(this);
     this.onPointerMove = this.onPointerMove.bind(this);
     this.onPointerEnd = this.onPointerEnd.bind(this);
+    this.onDragStart = this.onDragStart.bind(this);
+    this.onSelectionChange = this.onSelectionChange.bind(this);
     this.onWindowBlur = this.onWindowBlur.bind(this);
   }
 
@@ -278,21 +290,28 @@ export class ShaderFont extends HTMLElement {
     this.dataset.shaderFontBound = "true";
     this.dataset.shaderFontState = this.gesture.tag;
     this.addEventListener("pointerdown", this.onPointerDown);
+    this.addEventListener("dragstart", this.onDragStart);
     window.addEventListener("pointermove", this.onPointerMove, { passive: false });
     window.addEventListener("pointerup", this.onPointerEnd);
     window.addEventListener("pointercancel", this.onPointerEnd);
+    document.addEventListener("selectionchange", this.onSelectionChange);
     window.addEventListener("blur", this.onWindowBlur);
     this.resizeObserver.observe(this);
     this.textObserver.observe(this, { childList: true, characterData: true, subtree: true });
   }
 
   disconnectedCallback() {
-    this.cancelRestore();
-    this.stopDissolveClock();
+    this.resetInteractionForOptionChange();
+    this.maskGeometry = null;
+    this.maskTexture = null;
+    this.maskField = null;
+    this.maskSurface = null;
     this.removeEventListener("pointerdown", this.onPointerDown);
+    this.removeEventListener("dragstart", this.onDragStart);
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerEnd);
     window.removeEventListener("pointercancel", this.onPointerEnd);
+    document.removeEventListener("selectionchange", this.onSelectionChange);
     window.removeEventListener("blur", this.onWindowBlur);
     this.resizeObserver.disconnect();
     this.textObserver.disconnect();
@@ -305,14 +324,13 @@ export class ShaderFont extends HTMLElement {
     if (oldValue !== newValue && (name === "drag-effect" || name === "interaction")) {
       this.resetInteractionForOptionChange();
     }
-    this.invalidateMask();
+    if (name === "flow" || name === "roughness") this.invalidateMask();
   }
 
   applyAttributes() {
     for (const name of Object.keys(DEFAULT_COLORS)) {
       this.style.setProperty(`--_sf-${name}`, colorOrDefault(this, name));
     }
-    if (!this.hasAttribute("interaction")) this.setAttribute("interaction", "select");
     this.dataset.shader = this.shaderPreset();
     this.dataset.dragEffect = this.dragEffect();
   }
@@ -371,9 +389,12 @@ export class ShaderFont extends HTMLElement {
     const effect = this.dragEffect();
     this.cancelRestore();
     this.stopDissolveClock();
-    this.resetTransientEffect();
-    this.clearSelectionRegions();
+    if (this.dissolve === 0 || effect !== DragEffect.DISSOLVE) {
+      this.resetTransientEffect();
+      this.clearSelectionRegions();
+    }
     const rect = this.getBoundingClientRect();
+    this.gestureWidth = Math.max(120, rect.width);
     this.style.transformOrigin = `${event.clientX - rect.left}px ${event.clientY - rect.top}px`;
     this.transitionTo(pressedGesture(
       mode,
@@ -384,10 +405,15 @@ export class ShaderFont extends HTMLElement {
       this.offsetY,
       effect
     ));
+    if (mode === "select") ownedSelection(this)?.selection.removeAllRanges();
     if (mode === "direct") {
       event.preventDefault();
       this.setPointerCapture(event.pointerId);
     }
+  }
+
+  onDragStart(event) {
+    if (this.interaction() === "select") event.preventDefault();
   }
 
   onPointerMove(event) {
@@ -401,14 +427,19 @@ export class ShaderFont extends HTMLElement {
       state = activeGesture(state);
       this.transitionTo(state);
       if (state.mode === "direct") this.classList.add("is-dragging");
+      if (state.effect === DragEffect.DISSOLVE) {
+        this.resetTransientEffect();
+        this.clearSelectionRegions();
+      }
     }
 
     if (state.effect === DragEffect.DISSOLVE) {
+      this.selectionDirty = true;
       this.startDissolveClock();
       return;
     }
 
-    const width = Math.max(120, this.getBoundingClientRect().width);
+    const width = this.gestureWidth;
     const travelled = clamp(distance / (width * 0.82), 0, 1);
     if (state.effect === DragEffect.MOVE) {
       event.preventDefault();
@@ -429,7 +460,6 @@ export class ShaderFont extends HTMLElement {
       this.setElastic(createElasticTransform(dx, dy, width));
       return;
     }
-
   }
 
   onPointerEnd(event) {
@@ -437,7 +467,7 @@ export class ShaderFont extends HTMLElement {
     if ((state.tag !== GestureTag.PRESSED && state.tag !== GestureTag.ACTIVE) || event.pointerId !== state.pointerId) return;
     this.classList.remove("is-dragging");
     if (this.hasPointerCapture(event.pointerId)) this.releasePointerCapture(event.pointerId);
-    this.finishGesture(state);
+    this.finishGesture(state, event.type === "pointercancel");
   }
 
   onWindowBlur() {
@@ -445,10 +475,26 @@ export class ShaderFont extends HTMLElement {
     if (state.tag !== GestureTag.PRESSED && state.tag !== GestureTag.ACTIVE) return;
     this.classList.remove("is-dragging");
     if (this.hasPointerCapture(state.pointerId)) this.releasePointerCapture(state.pointerId);
-    this.finishGesture(state);
+    this.finishGesture(state, true);
   }
 
-  finishGesture(state) {
+  onSelectionChange() {
+    if (this.gesture.tag === GestureTag.ACTIVE && this.gesture.effect === DragEffect.DISSOLVE) {
+      this.selectionDirty = true;
+      this.startDissolveClock();
+      return;
+    }
+    if (this.gesture.tag !== GestureTag.SELECTED) return;
+    if (ownedSelection(this)) {
+      this.selectionDirty = true;
+      this.startDissolveClock();
+      return;
+    }
+    this.stopDissolveClock();
+    this.restoreDissolve();
+  }
+
+  finishGesture(state, cancelled = false) {
     if (state.effect === DragEffect.MOVE) {
       this.effectProgress = 0;
       this.publishProgress(0, state.effect);
@@ -463,24 +509,46 @@ export class ShaderFont extends HTMLElement {
       this.restoreElastic();
       return;
     }
-    this.captureSelectionRegions();
+    const hasSelection = this.captureSelectionRegions();
+    if (this.dissolveStartedAt !== null && hasSelection) {
+      const duration = numberAttribute(this, "dissolve-ms", DEFAULT_DISSOLVE_MS, 200, 10_000);
+      this.setDissolve(dissolveProgress(performance.now() - this.dissolveStartedAt, duration));
+    }
+    if (!cancelled && state.tag === GestureTag.ACTIVE && hasSelection && ownedSelection(this)) {
+      this.transitionTo(selectedGesture(DragEffect.DISSOLVE));
+      this.startDissolveClock();
+      return;
+    }
     this.stopDissolveClock();
     this.restoreDissolve();
   }
 
   startDissolveClock() {
     if (this.dissolveFrame !== 0) return;
-    if (this.dissolveStartedAt === 0) this.dissolveStartedAt = performance.now();
     const tick = now => {
+      this.dissolveFrame = 0;
       const state = this.gesture;
-      if (state.tag !== GestureTag.ACTIVE || state.effect !== DragEffect.DISSOLVE) {
-        this.dissolveFrame = 0;
+      if ((state.tag !== GestureTag.ACTIVE && state.tag !== GestureTag.SELECTED) || state.effect !== DragEffect.DISSOLVE) return;
+      if (this.selectionDirty) {
+        if (!this.captureSelectionRegions()) this.clearSelectionRegions();
+        this.selectionDirty = false;
+      }
+      const hasSelection = this.selectionRegions.length > 0 && ownedSelection(this);
+      if (!hasSelection) {
+        if (state.tag === GestureTag.SELECTED) {
+          this.stopDissolveClock();
+          this.restoreDissolve();
+        } else {
+          this.setDissolve(0);
+          this.dissolveStartedAt = null;
+          this.dissolveFrame = requestAnimationFrame(tick);
+        }
         return;
       }
-      const hasSelection = this.captureSelectionRegions();
+      this.dissolveStartedAt ??= now;
       const duration = numberAttribute(this, "dissolve-ms", DEFAULT_DISSOLVE_MS, 200, 10_000);
       const progress = dissolveProgress(now - this.dissolveStartedAt, duration);
-      if (hasSelection) this.setDissolve(progress);
+      this.setDissolve(progress);
       this.dissolveFrame = progress < 1 ? requestAnimationFrame(tick) : 0;
     };
     this.dissolveFrame = requestAnimationFrame(tick);
@@ -489,43 +557,72 @@ export class ShaderFont extends HTMLElement {
   stopDissolveClock() {
     if (this.dissolveFrame !== 0) cancelAnimationFrame(this.dissolveFrame);
     this.dissolveFrame = 0;
-    this.dissolveStartedAt = 0;
+    this.dissolveStartedAt = null;
   }
 
   captureSelectionRegions() {
     const regions = selectionGeometry(this);
-    if (!regions) return this.selectionRegions.length > 0;
+    if (!regions) return false;
     if (sameRegions(this.selectionRegions, regions)) return true;
     this.selectionRegions = regions;
-    this.regionRevision += 1;
-    this.maskCache.clear();
+    this.maskField = null;
+    this.renderedMaskStep = -1;
     return true;
   }
 
   clearSelectionRegions() {
     if (this.selectionRegions.length > 0) {
       this.selectionRegions = [];
-      this.regionRevision += 1;
-      this.maskCache.clear();
+      this.maskField = null;
+      this.renderedMaskStep = -1;
     }
   }
 
   invalidateMask() {
-    this.maskCache.clear();
-    this.textureCache.clear();
-    if (this.dissolve > 0) this.setDissolve(this.dissolve);
+    this.maskGeometry = null;
+    this.maskField = null;
+    this.renderedMaskStep = -1;
+    this.selectionDirty = true;
+    if (this.dissolve > 0) {
+      if (ownedSelection(this)) this.captureSelectionRegions();
+      this.setDissolve(this.dissolve);
+    }
   }
 
-  maskForProgress(progress) {
-    if (progress <= 0.001) return "";
+  prepareMask() {
+    if (this.maskField) return this.maskField;
+    if (!this.maskGeometry) this.maskGeometry = this.measureMask();
+    const { width, height, scaleX, scaleY, lineHeight, direction, flow, roughness, seed } = this.maskGeometry;
+    if (!this.maskTexture || this.maskTexture.width !== width || this.maskTexture.height !== height || this.maskTexture.seed !== seed) {
+      this.maskTexture = { width, height, seed, texture: createErosionField(width, height, { seed }) };
+    }
+    const regions = this.selectionRegions.map(region => ({
+      x: region.x * scaleX,
+      y: region.y * scaleY,
+      width: region.width * scaleX,
+      height: region.height * scaleY
+    }));
+    this.maskField = createMaskField(width, height, {
+      lineHeight, direction, flow, roughness, seed, regions, texture: this.maskTexture.texture
+    });
+    if (!this.maskSurface || this.maskSurface.canvas.width !== width || this.maskSurface.canvas.height !== height) {
+      this.maskSurface = createMaskSurface(width, height);
+    }
+    return this.maskField;
+  }
+
+  measureMask() {
     const rect = this.getBoundingClientRect();
-    const scale = Math.min(1, 320 / Math.max(1, rect.width), 160 / Math.max(1, rect.height));
-    const width = Math.max(1, Math.round(rect.width * scale));
-    const height = Math.max(1, Math.round(rect.height * scale));
+    const scale = Math.min(1, 768 / Math.max(1, rect.width), 384 / Math.max(1, rect.height),
+      Math.sqrt(MAX_MASK_PIXELS / Math.max(1, rect.width * rect.height)));
+    const width = Math.max(1, Math.floor(rect.width * scale));
+    const height = Math.max(1, Math.floor(rect.height * scale));
+    const scaleX = width / Math.max(1, rect.width);
+    const scaleY = height / Math.max(1, rect.height);
     const computed = getComputedStyle(this);
     const rawLineHeight = Number.parseFloat(computed.lineHeight);
     const rawFontSize = Number.parseFloat(computed.fontSize) || 16;
-    const lineHeight = Math.min(height, Math.max(1, (Number.isFinite(rawLineHeight) ? rawLineHeight : rawFontSize * 1.2) * scale));
+    const lineHeight = Math.min(height, Math.max(1, (Number.isFinite(rawLineHeight) ? rawLineHeight : rawFontSize * 1.2) * scaleY));
     const flow = this.flow();
     const direction = flow === "rtl"
       ? "rtl"
@@ -533,53 +630,28 @@ export class ShaderFont extends HTMLElement {
         ? "ltr"
         : computed.direction === "rtl" ? "rtl" : "ltr";
     const roughness = numberAttribute(this, "roughness", 0.26, 0, 0.48);
-    const step = Math.min(MASK_STEPS, Math.max(1, Math.round(progress * MASK_STEPS)));
     const seed = hashText(this.textContent ?? "");
-    const regions = this.selectionRegions.map(region => ({
-      x: region.x * scale,
-      y: region.y * scale,
-      width: region.width * scale,
-      height: region.height * scale
-    }));
-    const key = [width, height, Math.round(lineHeight), flow, direction, roughness, step, seed, this.regionRevision].join(":");
-    if (this.maskCache.has(key)) {
-      const cached = this.maskCache.get(key);
-      this.maskCache.delete(key);
-      this.maskCache.set(key, cached);
-      return cached;
-    }
-
-    const textureKey = [width, height, seed].join(":");
-    let texture = this.textureCache.get(textureKey);
-    if (!texture) {
-      texture = createErosionField(width, height, { seed });
-      this.textureCache.clear();
-      this.textureCache.set(textureKey, texture);
-    }
-    const alpha = createMaskAlpha(width, height, {
-      progress: step / MASK_STEPS,
-      flow,
-      direction,
-      lineHeight,
-      roughness,
-      seed,
-      texture,
-      regions
-    });
-    const mask = alphaToMaskUrl(width, height, alpha);
-    this.maskCache.set(key, mask);
-    if (this.maskCache.size > MASK_CACHE_LIMIT) {
-      this.maskCache.delete(this.maskCache.keys().next().value);
-    }
-    return mask;
+    return { width, height, scaleX, scaleY, lineHeight, direction, flow, roughness, seed };
   }
 
   setDissolve(progress) {
     this.dissolve = clamp(progress, 0, 1);
-    const mask = this.maskForProgress(this.dissolve);
-    this.style.webkitMaskImage = mask || "none";
-    this.style.maskImage = mask || "none";
-    this.style.setProperty("--sf-fade", (1 - this.dissolve * 0.1).toFixed(3));
+    const step = Math.round(this.dissolve * MASK_STEPS);
+    if (step === 0 || this.selectionRegions.length === 0) {
+      this.style.webkitMaskImage = "none";
+      this.style.maskImage = "none";
+      this.renderedMaskStep = -1;
+    } else if (this.renderedMaskStep !== step) {
+      const field = this.prepareMask();
+      const { canvas, context, image, alpha } = this.maskSurface;
+      renderMaskAlpha(field, step / MASK_STEPS, alpha);
+      for (let index = 0; index < alpha.length; index += 1) image.data[index * 4 + 3] = alpha[index];
+      context.putImageData(image, 0, 0);
+      const mask = `url("${canvas.toDataURL("image/png")}")`;
+      this.style.webkitMaskImage = mask;
+      this.style.maskImage = mask;
+      this.renderedMaskStep = step;
+    }
     this.classList.toggle("is-effect-active", this.dissolve > 0.001);
     this.publishProgress(this.dissolve, DragEffect.DISSOLVE);
   }
@@ -644,12 +716,14 @@ export class ShaderFont extends HTMLElement {
     this.effectProgress = 0;
     this.style.webkitMaskImage = "none";
     this.style.maskImage = "none";
-    this.style.setProperty("--sf-fade", "1");
+    this.renderedMaskStep = -1;
     this.resetMotionVariables();
   }
 
   cancelRestore() {
     this.restoreToken += 1;
+    if (this.restoreFrame !== 0) cancelAnimationFrame(this.restoreFrame);
+    this.restoreFrame = 0;
     if (this.restoreTimer !== 0) {
       clearTimeout(this.restoreTimer);
       this.restoreTimer = 0;
@@ -662,6 +736,8 @@ export class ShaderFont extends HTMLElement {
       clearTimeout(this.restoreTimer);
       this.restoreTimer = 0;
     }
+    if (this.restoreFrame !== 0) cancelAnimationFrame(this.restoreFrame);
+    this.restoreFrame = 0;
     this.resetMotionVariables();
     this.publishProgress(0, effect);
     this.transitionTo(idleGesture());
@@ -722,10 +798,10 @@ export class ShaderFont extends HTMLElement {
         amount: initialProgress * (1 - elapsed)
       });
       this.publishProgress(initialProgress * (1 - elapsed), DragEffect.ELASTIC);
-      if (elapsed < 1) requestAnimationFrame(tick);
+      if (elapsed < 1) this.restoreFrame = requestAnimationFrame(tick);
       else this.completeMotionRestore(token, DragEffect.ELASTIC);
     };
-    requestAnimationFrame(tick);
+    this.restoreFrame = requestAnimationFrame(tick);
   }
 
   completeRestore(token) {
@@ -734,12 +810,15 @@ export class ShaderFont extends HTMLElement {
       clearTimeout(this.restoreTimer);
       this.restoreTimer = 0;
     }
+    if (this.restoreFrame !== 0) cancelAnimationFrame(this.restoreFrame);
+    this.restoreFrame = 0;
     this.setDissolve(0);
     this.clearSelectionRegions();
     this.transitionTo(idleGesture());
   }
 
   restoreDissolve() {
+    this.stopDissolveClock();
     const initial = this.dissolve;
     this.cancelRestore();
     const token = this.restoreToken;
@@ -751,25 +830,19 @@ export class ShaderFont extends HTMLElement {
     }
 
     const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const hold = reduceMotion ? 0 : RESTORE_HOLD_MS;
     const duration = reduceMotion ? 80 : numberAttribute(this, "restore-ms", DEFAULT_RESTORE_MS, 100, 10_000);
     this.transitionTo(restoringGesture(token));
-    this.restoreTimer = window.setTimeout(() => this.completeRestore(token), hold + duration + 100);
+    this.restoreTimer = window.setTimeout(() => this.completeRestore(token), duration + 100);
     const startedAt = performance.now();
     const tick = now => {
       if (token !== this.restoreToken || this.gesture.tag !== GestureTag.RESTORING || this.gesture.token !== token) return;
-      const sinceStart = now - startedAt;
-      if (sinceStart < hold) {
-        requestAnimationFrame(tick);
-        return;
-      }
-      const elapsed = clamp((sinceStart - hold) / duration, 0, 1);
+      const elapsed = clamp((now - startedAt) / duration, 0, 1);
       const eased = elapsed * elapsed * (3 - 2 * elapsed);
       this.setDissolve(initial * (1 - eased));
-      if (elapsed < 1) requestAnimationFrame(tick);
+      if (elapsed < 1) this.restoreFrame = requestAnimationFrame(tick);
       else this.completeRestore(token);
     };
-    requestAnimationFrame(tick);
+    this.restoreFrame = requestAnimationFrame(tick);
   }
 
   resetPosition() {

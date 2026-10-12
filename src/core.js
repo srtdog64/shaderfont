@@ -4,6 +4,7 @@ export const GestureTag = Object.freeze({
   IDLE: "idle",
   PRESSED: "pressed",
   ACTIVE: "active",
+  SELECTED: "selected",
   RESTORING: "restoring"
 });
 
@@ -26,7 +27,8 @@ const SHADER_PRESETS = new Set(Object.values(ShaderPreset));
 const ALLOWED_TRANSITIONS = Object.freeze({
   [GestureTag.IDLE]: new Set([GestureTag.IDLE, GestureTag.PRESSED, GestureTag.RESTORING]),
   [GestureTag.PRESSED]: new Set([GestureTag.IDLE, GestureTag.ACTIVE, GestureTag.RESTORING]),
-  [GestureTag.ACTIVE]: new Set([GestureTag.IDLE, GestureTag.RESTORING]),
+  [GestureTag.ACTIVE]: new Set([GestureTag.IDLE, GestureTag.SELECTED, GestureTag.RESTORING]),
+  [GestureTag.SELECTED]: new Set([GestureTag.IDLE, GestureTag.PRESSED, GestureTag.RESTORING]),
   [GestureTag.RESTORING]: new Set([GestureTag.IDLE, GestureTag.PRESSED, GestureTag.RESTORING])
 });
 
@@ -62,11 +64,21 @@ export function dissolveProgress(elapsedMs, durationMs) {
   return clamp(elapsed / duration, 0, 1);
 }
 
+export function numberOption(value, fallback, minimum, maximum) {
+  if (value === null || value === undefined || String(value).trim() === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? clamp(parsed, minimum, maximum) : fallback;
+}
+
 export function activeGesture(pressed) {
   if (pressed.tag !== GestureTag.PRESSED) {
     throw new TypeError(`activeGesture expects pressed, received ${pressed.tag}`);
   }
   return Object.freeze({ ...pressed, tag: GestureTag.ACTIVE });
+}
+
+export function selectedGesture(effect = DragEffect.DISSOLVE) {
+  return Object.freeze({ tag: GestureTag.SELECTED, effect });
 }
 
 export function restoringGesture(token) {
@@ -111,6 +123,10 @@ function smoothstep01(value) {
   return t * t * (3 - 2 * t);
 }
 
+function quintic01(t) {
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
 function hash2(x, y, seed) {
   let value = Math.imul((x | 0) ^ (seed | 0) ^ 0x68bc21eb, 0x27d4eb2d);
   value ^= Math.imul((y | 0) ^ 0x02e5be93, 0x165667b1);
@@ -125,8 +141,8 @@ function valueNoise(x, y, scale, seed) {
   const py = y / scale;
   const ix = Math.floor(px);
   const iy = Math.floor(py);
-  const fx = smoothstep01(px - ix);
-  const fy = smoothstep01(py - iy);
+  const fx = quintic01(px - ix);
+  const fy = quintic01(py - iy);
   const a = hash2(ix, iy, seed);
   const b = hash2(ix + 1, iy, seed);
   const c = hash2(ix, iy + 1, seed);
@@ -214,62 +230,89 @@ function normalizeRegions(width, height, regions) {
   });
 }
 
-function pointInRegions(x, y, regions) {
-  const centerX = x + 0.5;
-  const centerY = y + 0.5;
-  return regions.some(region => (
-    centerX >= region.left && centerX < region.right
-    && centerY >= region.top && centerY < region.bottom
-  ));
-}
-
-export function createMaskAlpha(width, height, options = {}) {
+export function createMaskField(width, height, options = {}) {
   validateMaskDimensions(width, height);
-
-  const progress = clamp(Number(options.progress ?? 0), 0, 1);
-  const alpha = new Uint8ClampedArray(width * height);
+  const selectedOnly = options.regions !== undefined && options.regions !== null;
   const regions = normalizeRegions(width, height, options.regions);
-  if (progress <= 0) {
-    alpha.fill(255);
-    return alpha;
-  }
-  if (regions.length === 0 && progress >= 1) return alpha;
-
-  if (regions.length > 0) alpha.fill(255);
-
+  const thresholds = new Float32Array(width * height);
+  thresholds.fill(Infinity);
   const flow = options.flow ?? "reading";
   const direction = options.direction === "rtl" || flow === "rtl" ? "rtl" : "ltr";
   const lineHeight = clamp(Number(options.lineHeight ?? height), 1, height);
   const roughness = clamp(Number(options.roughness ?? 0.26), 0, 0.48);
+  const feather = 0.025 + roughness * 0.08;
+  if (selectedOnly && regions.length === 0) return { width, height, thresholds, feather };
   const seed = Number(options.seed ?? 0) | 0;
   const texture = options.texture ?? createErosionField(width, height, { seed });
   if (texture.length !== width * height) {
     throw new RangeError("Erosion texture dimensions do not match the mask");
   }
   const erosionBand = clamp(0.34 + roughness * 1.35, 0.34, 0.98);
-  const feather = 0.035;
-  const regionFeather = clamp(0.018 + roughness * 0.11, 0.018, 0.075);
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (regions.length > 0 && !pointInRegions(x, y, regions)) continue;
-      const erosion = texture[y * width + x];
-      if (regions.length > 0) {
-        alpha[y * width + x] = progress >= 1 ? 0 : alphaAt(erosion, progress, regionFeather);
-        continue;
+  if (selectedOnly) {
+    const selectedErosionBand = 1.1 + roughness * 3;
+    const totalWidth = regions.reduce((sum, region) => sum + region.right - region.left, 0);
+    let precedingWidth = 0;
+    for (const region of regions) {
+      const firstX = Math.max(0, Math.ceil(region.left - 0.5));
+      const lastX = Math.min(width, Math.ceil(region.right - 0.5));
+      const firstY = Math.max(0, Math.ceil(region.top - 0.5));
+      const lastY = Math.min(height, Math.ceil(region.bottom - 0.5));
+      for (let y = firstY; y < lastY; y += 1) {
+        for (let x = firstX; x < lastX; x += 1) {
+          const index = y * width + x;
+          const distance = direction === "rtl" ? region.right - x - 0.5 : x + 0.5 - region.left;
+          const reading = (precedingWidth + distance) / totalWidth;
+          thresholds[index] = flow === "random" ? texture[index]
+            : (reading + selectedErosionBand * texture[index]) / (1 + selectedErosionBand);
+        }
       }
-      const reading = readingCoordinate(x, y, width, height, lineHeight, direction);
-      const localProgress = flow === "random"
-        ? progress
-        : clamp((progress * (1 + erosionBand) - reading) / erosionBand, 0, 1);
-      if (localProgress <= 0) {
-        alpha[y * width + x] = 255;
-      } else if (localProgress >= 1) {
-        alpha[y * width + x] = 0;
-      } else {
-        alpha[y * width + x] = alphaAt(erosion, localProgress, feather);
+      precedingWidth += region.right - region.left;
+    }
+    // Spread burn times across the animation instead of concentrating them at mid-progress.
+    const bins = new Uint32Array(512);
+    let count = 0;
+    for (const threshold of thresholds) {
+      if (!Number.isFinite(threshold)) continue;
+      bins[Math.min(511, Math.floor(threshold * 512))] += 1;
+      count += 1;
+    }
+    const cumulative = new Uint32Array(512);
+    for (let bin = 1; bin < 512; bin += 1) cumulative[bin] = cumulative[bin - 1] + bins[bin - 1];
+    for (let index = 0; index < thresholds.length; index += 1) {
+      const threshold = thresholds[index];
+      if (!Number.isFinite(threshold)) continue;
+      const position = Math.min(511.999, threshold * 512);
+      const bin = Math.floor(position);
+      thresholds[index] = (cumulative[bin] + (position - bin) * bins[bin]) / count;
+    }
+  } else {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = y * width + x;
+        const reading = readingCoordinate(x, y, width, height, lineHeight, direction);
+        thresholds[index] = flow === "random" ? texture[index]
+          : (reading + erosionBand * texture[index]) / (1 + erosionBand);
       }
     }
   }
+  return { width, height, thresholds, feather };
+}
+
+export function renderMaskAlpha(field, progress, output = new Uint8ClampedArray(field.width * field.height)) {
+  if (output.length !== field.thresholds.length) throw new RangeError("Mask output dimensions do not match the field");
+  const amount = clamp(Number(progress) || 0, 0, 1);
+  const thresholdProgress = amount * (1 + 2 * field.feather) - field.feather;
+  for (let index = 0; index < output.length; index += 1) {
+    const threshold = field.thresholds[index];
+    output[index] = !Number.isFinite(threshold) || amount === 0 ? 255
+      : amount === 1 ? 0 : alphaAt(threshold, thresholdProgress, field.feather);
+  }
+  return output;
+}
+
+export function createMaskAlpha(width, height, options = {}) {
+  const field = createMaskField(width, height, options);
+  const alpha = renderMaskAlpha(field, options.progress ?? 0);
   return alpha;
 }

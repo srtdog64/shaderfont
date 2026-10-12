@@ -8,15 +8,19 @@ import {
   createElasticTransform,
   createErosionField,
   createMaskAlpha,
+  createMaskField,
   dampedSpringFactor,
   dissolveProgress,
   hashText,
   idleGesture,
+  numberOption,
   pressedGesture,
   readingCoordinate,
   resolveDragEffect,
   resolveShaderPreset,
-  restoringGesture
+  renderMaskAlpha,
+  restoringGesture,
+  selectedGesture
 } from "../src/core.js";
 
 function mean(values) {
@@ -152,8 +156,10 @@ test("gesture ADT rejects impossible transitions", () => {
   const idle = idleGesture();
   const pressed = assertGestureTransition(idle, pressedGesture("select", 1, 0, 0, 0, 0));
   const active = assertGestureTransition(pressed, activeGesture(pressed));
-  assert.equal(assertGestureTransition(active, restoringGesture(7)).tag, "restoring");
+  const selected = assertGestureTransition(active, selectedGesture());
+  assert.equal(assertGestureTransition(selected, restoringGesture(7)).tag, "restoring");
   assert.throws(() => assertGestureTransition(idle, activeGesture(pressed)), /idle -> active/);
+  assert.throws(() => assertGestureTransition(idle, selectedGesture()), /idle -> selected/);
 });
 
 test("four active drag effects and explicit none resolve deterministically", () => {
@@ -197,4 +203,50 @@ test("elastic drag is bounded and its spring returns to rest", () => {
 
 test("mask size is bounded", () => {
   assert.throws(() => createMaskAlpha(4096, 4096), /4-megapixel/);
+});
+
+test("omitted and invalid numeric options retain defaults while explicit values are bounded", () => {
+  for (const value of [null, undefined, "", "  ", "bad", "Infinity"]) {
+    assert.equal(numberOption(value, 2400, 200, 10000), 2400);
+    assert.equal(numberOption(value, 0.26, 0, 0.48), 0.26);
+  }
+  assert.equal(numberOption("0", 2400, 200, 10000), 200);
+  assert.equal(numberOption("3000", 2400, 200, 10000), 3000);
+  assert.equal(numberOption("50000", 2400, 200, 10000), 10000);
+});
+
+test("explicit empty or out-of-bounds selection remains fully visible at every progress", () => {
+  for (const regions of [[], [{ x: 100, y: 100, width: 2, height: 2 }]]) {
+    const field = createMaskField(16, 8, { regions });
+    for (const progress of [0, 0.5, 1]) assert.ok(renderMaskAlpha(field, progress).every(value => value === 255));
+  }
+  assert.throws(() => createMaskField(16, 8, { regions: [{ x: NaN, y: 0, width: 2, height: 2 }] }), /finite/);
+});
+
+test("selected erosion progresses throughout the duration without large single-frame jumps", () => {
+  const field = createMaskField(180, 36, { seed: 73, regions: [{ x: 0, y: 0, width: 180, height: 36 }] });
+  let previous = new Uint8ClampedArray(180 * 36).fill(255);
+  for (let step = 1; step <= 144; step += 1) {
+    const next = renderMaskAlpha(field, step / 144);
+    for (let index = 0; index < next.length; index += 1) assert.ok(next[index] <= previous[index]);
+    assert.ok(mean(previous) - mean(next) < 7, `step ${step} abruptly removed too much of the mask`);
+    previous = next;
+  }
+  for (const progress of [0.1, 0.25, 0.5, 0.75, 0.9]) {
+    const remaining = mean(renderMaskAlpha(field, progress)) / 255;
+    assert.ok(Math.abs(remaining - (1 - progress)) < 0.055, `burning clustered at ${progress}`);
+  }
+});
+
+test("prepared masks reuse caller buffers and honor reading direction inside selection", () => {
+  const options = { seed: 42, regions: [{ x: 0, y: 0, width: 180, height: 36 }] };
+  const left = createMaskField(180, 36, options);
+  const right = createMaskField(180, 36, { ...options, flow: "rtl" });
+  const output = new Uint8ClampedArray(180 * 36);
+  assert.equal(renderMaskAlpha(left, 0.5, output), output);
+  const [leftFirst, leftLast] = halfMeans(output, 180, 36);
+  const [rightFirst, rightLast] = halfMeans(renderMaskAlpha(right, 0.5), 180, 36);
+  assert.ok(leftFirst + 80 < leftLast);
+  assert.ok(rightLast + 80 < rightFirst);
+  assert.throws(() => renderMaskAlpha(left, 0.5, new Uint8ClampedArray(1)), /do not match/);
 });
