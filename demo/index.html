@@ -70,13 +70,20 @@
     .usage p { color: #7f9ba6; line-height: 1.65; }
     .usage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
     .usage-grid pre { margin: 0; min-height: 100%; }
+    .advanced { margin: 0 0 24px; }
+    summary { cursor: pointer; color: #8fc6d4; padding: 10px 0; }
+    .preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+    .preset-card { display: grid; gap: 12px; text-align: left; padding: 22px; min-height: 140px; }
+    .preset-card shader-font { font-size: 36px; font-weight: 900; line-height: 1.15; pointer-events: none; }
+    .preset-card span { color: #8bb0bd; font-size: 13px; }
+    #renderer-error { color: #ffb39b; }
   </style>
 </head>
 <body>
   <main>
     <div class="eyebrow">DOM typography / sentence-aware dissolve</div>
     <h1>Shaderfont</h1>
-    <p class="intro">글자를 선택하고 손을 놓아 보세요. 선택한 부분만 천천히 타들어가며, 바깥을 누르면 다시 나타납니다. 이동, 떨림, 고무줄 효과도 골라 쓸 수 있습니다.</p>
+    <p class="intro">재질, 드래그, 자동 등장을 따로 골라 보세요. 드래그 디졸브는 선택한 부분만 지우고, 불타는 등장은 드래그 없이 글자를 드러냅니다.</p>
 
     <section class="stage">
       <shader-font
@@ -91,16 +98,29 @@
         secondary="#ff946a"
         accent="#fff4bd">이 문장은 실제 DOM 텍스트입니다. 직접 고쳐 쓰거나 문장을 드래그해 보세요.</shader-font>
       <div class="hint"><span id="gesture-hint">드래그 후 선택을 해제할 때까지 유지</span> · 현재 상태 <span class="status" id="status">idle / dissolve / 0%</span></div>
+      <p id="renderer-error" role="alert" hidden></p>
     </section>
 
     <section class="controls" aria-label="Shaderfont controls">
+      <label>렌더러
+        <select id="renderer">
+          <option value="canvas2d">Canvas 2D (기본)</option>
+          <option value="webgl">WebGL 2 (GPU)</option>
+        </select>
+      </label>
       <label>주 색상 <input id="primary" type="color" value="#69efff"></label>
       <label>보조 색상 <input id="secondary" type="color" value="#ff946a"></label>
       <label>강조 색상 <input id="accent" type="color" value="#fff4bd"></label>
       <label>글자 셰이더
-        <select id="shader">
-          <option value="hologram">홀로그램</option>
-          <option value="none">없음 (일반 글자)</option>
+        <select id="shader"></select>
+      </label>
+      <label>재질 속도
+        <input id="speed" type="range" min="0" max="4" step="0.1" value="1">
+      </label>
+      <label>자동 등장
+        <select id="reveal-effect">
+          <option value="none">없음 (기본)</option>
+          <option value="burn">불타는 등장</option>
         </select>
       </label>
       <label>디졸브 흐름
@@ -128,10 +148,36 @@
       <button id="reset" type="button">위치·효과 초기화</button>
     </section>
 
-    <pre><code>&lt;script type="module" src="/src/shader-font.js"&gt;&lt;/script&gt;
+    <details class="advanced">
+      <summary>재질 크기와 화질</summary>
+      <div class="controls">
+        <label>무늬 크기 <input id="scale" type="range" min="0.25" max="4" step="0.05" value="1"></label>
+        <label>재질 해상도 <input id="resolution" type="range" min="0.25" max="1" step="0.05" value="0.5"></label>
+        <label>색 경계 부드러움 <input id="softness" type="range" min="0" max="1" step="0.05" value="0.35"></label>
+      </div>
+    </details>
+
+    <details class="advanced" id="reveal-settings">
+      <summary>자동 등장 시간</summary>
+      <p>나타난 뒤에는 글자를 온전히 보여 줍니다. 반복 대기를 0으로 두면 한 번만 등장합니다. 재질 속도와 드래그 시간은 바꾸지 않습니다.</p>
+      <div class="controls">
+        <label>등장 시간(ms) <input id="reveal-ms" type="number" min="200" max="10000" step="100" value="1800"></label>
+        <label>등장 뒤 반복 대기(ms) <input id="reveal-interval-ms" type="number" min="0" max="60000" step="500" value="5000"></label>
+        <button id="replay-reveal" type="button" disabled>등장 다시 보기</button>
+      </div>
+    </details>
+
+    <section aria-labelledby="preset-heading">
+      <h2 id="preset-heading">재질 샘플</h2>
+      <p class="intro">가리키거나 키보드로 포커스하면 움직입니다. 누르면 샘플의 재질과 색상을 위 문장에 적용합니다.</p>
+      <div id="presets" class="preset-grid"></div>
+    </section>
+
+    <pre><code id="example">&lt;script type="module" src="/src/shader-font.js"&gt;&lt;/script&gt;
 
 &lt;shader-font
   shader="hologram"
+  renderer="canvas2d"
   drag-effect="dissolve"
   primary="#69efff"
   secondary="#ff946a"
@@ -144,11 +190,17 @@
 
     <section class="usage">
       <h2>실제로 쓸 때</h2>
-      <p><code>shader</code>와 <code>drag-effect</code>는 서로 독립적입니다. 둘 중 하나만 끄거나, 둘 다 끌 수 있습니다.</p>
+      <p><code>shader</code>, <code>drag-effect</code>, <code>reveal-effect</code>는 서로 독립적입니다. 필요한 효과만 켜고 나머지는 <code>none</code>으로 둡니다. 효과는 브라우저의 실제 글자 모양으로 잘라냅니다.</p>
       <div class="usage-grid">
         <pre><code>&lt;!-- 일반 글자 + 브라우저 기본 선택 --&gt;
 &lt;shader-font shader="none" drag-effect="none"&gt;
   평범한 본문
+&lt;/shader-font&gt;</code></pre>
+        <pre><code>&lt;!-- 1.8초 등장 + 5초 대기 후 반복 --&gt;
+&lt;shader-font shader="none" drag-effect="none"
+  reveal-effect="burn" reveal-ms="1800"
+  reveal-interval-ms="5000"&gt;
+  불타는 경계를 따라 나타나는 글자
 &lt;/shader-font&gt;</code></pre>
         <pre><code>&lt;!-- 홀로그램 + 고무줄 드래그 --&gt;
 &lt;shader-font shader="hologram" drag-effect="elastic"&gt;
@@ -163,6 +215,7 @@
     </section>
   </main>
   <script type="module">
+    import { SHADER_PRESETS } from "../src/options.js";
     const sentence = document.querySelector("#sentence");
     const status = document.querySelector("#status");
     const gestureHint = document.querySelector("#gesture-hint");
@@ -173,20 +226,99 @@
       shake: "문장을 잡아 흔들기",
       elastic: "문장을 당겼다가 놓기"
     };
-    for (const name of ["shader", "primary", "secondary", "accent", "flow", "roughness", "dissolve-ms", "drag-effect"]) {
-      document.querySelector(`#${name}`).addEventListener("input", event => sentence.setAttribute(name, event.target.value));
+    const shaderSelect = document.querySelector("#shader");
+    for (const preset of SHADER_PRESETS) {
+      const option = document.createElement("option");
+      option.value = preset.name;
+      option.textContent = preset.label;
+      shaderSelect.append(option);
     }
+    shaderSelect.value = "hologram";
+    const fields = ["renderer", "shader", "primary", "secondary", "accent", "flow", "roughness", "dissolve-ms", "drag-effect", "speed", "scale", "resolution", "softness", "reveal-effect", "reveal-ms", "reveal-interval-ms"];
+    function updateExample() {
+      const attributes = fields.map(name => `  ${name}="${sentence.getAttribute(name) ?? document.querySelector(`#${name}`).value}"`).join("\n");
+      const text = sentence.textContent.trim().replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+      document.querySelector("#example").textContent = `<script type="module" src="/src/shader-font.js"><\/script>\n\n<shader-font\n${attributes}\n  restore-ms="1800">\n  ${text}\n</shader-font>`;
+    }
+    for (const name of fields) {
+      document.querySelector(`#${name}`).addEventListener("input", event => {
+        sentence.setAttribute(name, event.target.value);
+        if (name === "renderer") for (const sample of document.querySelectorAll(".preset-card shader-font")) sample.setAttribute(name, event.target.value);
+        updateExample();
+      });
+    }
+    sentence.addEventListener("input", updateExample);
+    document.querySelector("#reveal-effect").addEventListener("input", event => {
+      const enabled = event.target.value !== "none";
+      document.querySelector("#reveal-settings").open = enabled;
+      document.querySelector("#replay-reveal").disabled = !enabled;
+    });
+    document.querySelector("#replay-reveal").addEventListener("click", () => sentence.restartReveal());
     document.querySelector("#drag-effect").addEventListener("input", event => {
       gestureHint.textContent = hints[event.target.value];
       status.textContent = `idle / ${event.target.value} / 0%`;
     });
     document.querySelector("#reset").addEventListener("click", () => sentence.resetPosition());
+    const rendererError = document.querySelector("#renderer-error");
+    sentence.addEventListener("shaderfont-error", event => {
+      rendererError.hidden = false;
+      rendererError.textContent = `효과를 실행하지 못했습니다 (${event.detail.code}). 설정을 바꾸거나 초기화 후 다시 시도하세요.`;
+    });
+    for (const name of ["renderer", "reset"]) {
+      document.querySelector(`#${name}`).addEventListener(name === "reset" ? "click" : "input", () => {
+        rendererError.hidden = true;
+      });
+    }
     sentence.addEventListener("shaderfont-state", event => {
       status.textContent = `${event.detail.state} / ${event.detail.effect} / ${Math.round(sentence.effectProgress * 100)}%`;
     });
     sentence.addEventListener("shaderfont-progress", event => {
       status.textContent = `${event.detail.state} / ${event.detail.effect} / ${Math.round(event.detail.progress * 100)}%`;
     });
+    const palettes = {
+      noise: ["#a81120", "#fd3039", "#ffc57a"],
+      plasma: ["#3e0e89", "#e752ce", "#71f4ff"],
+      aurora: ["#043b53", "#31c896", "#af8df5"],
+      cyber: ["#052045", "#28abdd", "#d6fbff"],
+      flame: ["#420809", "#ff351e", "#ffe89d"],
+      waves: ["#063b70", "#009fd0", "#c4fff8"]
+    };
+    for (const preset of SHADER_PRESETS.filter(preset => preset.id >= 2)) {
+      const button = document.createElement("button");
+      button.className = "preset-card";
+      button.type = "button";
+      button.setAttribute("aria-label", `${preset.label} 샘플 적용`);
+      const sample = document.createElement("shader-font");
+      sample.setAttribute("shader", preset.name);
+      sample.setAttribute("renderer", "canvas2d");
+      sample.setAttribute("drag-effect", "none");
+      sample.setAttribute("speed", "0");
+      sample.setAttribute("resolution", "0.35");
+      sample.setAttribute("aria-hidden", "true");
+      sample.textContent = `${preset.name.toUpperCase()} 글자`;
+      ["primary", "secondary", "accent"].forEach((name, index) => sample.setAttribute(name, palettes[preset.name][index]));
+      const label = document.createElement("span");
+      label.textContent = preset.label;
+      button.append(sample, label);
+      const play = () => sample.setAttribute("speed", "1");
+      const stop = () => sample.setAttribute("speed", "0");
+      button.addEventListener("pointerenter", play);
+      button.addEventListener("pointerleave", stop);
+      button.addEventListener("focus", play);
+      button.addEventListener("blur", stop);
+      button.addEventListener("click", () => {
+        sentence.setAttribute("shader", preset.name);
+        shaderSelect.value = preset.name;
+        ["primary", "secondary", "accent"].forEach((name, index) => {
+          const color = palettes[preset.name][index];
+          sentence.setAttribute(name, color);
+          document.querySelector(`#${name}`).value = color;
+        });
+        updateExample();
+      });
+      document.querySelector("#presets").append(button);
+    }
+    updateExample();
   </script>
 </body>
 </html>

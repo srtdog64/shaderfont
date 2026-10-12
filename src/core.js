@@ -1,3 +1,6 @@
+import { ShaderPreset } from "./presets.js";
+export { ShaderPreset } from "./presets.js";
+
 const UINT32_MAX = 0xffffffff;
 
 export const GestureTag = Object.freeze({
@@ -14,11 +17,6 @@ export const DragEffect = Object.freeze({
   MOVE: "move",
   SHAKE: "shake",
   ELASTIC: "elastic"
-});
-
-export const ShaderPreset = Object.freeze({
-  NONE: "none",
-  HOLOGRAM: "hologram"
 });
 
 const DRAG_EFFECTS = new Set(Object.values(DragEffect));

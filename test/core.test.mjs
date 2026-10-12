@@ -173,7 +173,7 @@ test("four active drag effects and explicit none resolve deterministically", () 
 });
 
 test("shader presets include a visible default and an explicit none", () => {
-  assert.deepEqual(Object.values(ShaderPreset), ["none", "hologram"]);
+  assert.deepEqual(Object.values(ShaderPreset), ["none", "hologram", "noise", "plasma", "aurora", "cyber", "flame", "waves"]);
   assert.equal(resolveShaderPreset("none"), ShaderPreset.NONE);
   assert.equal(resolveShaderPreset("hologram"), ShaderPreset.HOLOGRAM);
   assert.equal(resolveShaderPreset("unknown"), ShaderPreset.HOLOGRAM);

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Shaderfont material checks</title>
+<style>body { font: 16px/1.5 system-ui; padding: 20px; } pre { white-space: pre-wrap; }</style>
+<h1>Material checks</h1><pre id="results">Running</pre>
+<script type="module">
+import { createMaterialRenderer } from "../../src/material-renderer.js";
+import { SHADER_PRESETS } from "../../src/presets.js";
+import { registerShaderFont } from "../../src/index.js";
+
+const results = [];
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(condition, description, limit = 4000) {
+  const deadline = performance.now() + limit;
+  while (!condition() && performance.now() < deadline) await delay(20);
+  check(condition(), description);
+}
+function check(condition, message) { if (!condition) throw new Error(message); }
+async function run(name, test) {
+  try {
+    await until(() => !document.hidden, "The test page must be visible");
+    results.push({ name, status: "pass", ...await test() });
+  }
+  catch (error) { results.push({ name, status: "fail", error: error.message, code: error.code }); }
+}
+async function pixels(url) {
+  const image = new Image(); image.src = url; await image.decode();
+  const canvas = document.createElement("canvas"); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
+  return context.getImageData(0, 0, canvas.width, canvas.height).data;
+}
+
+await run("six procedural presets: Canvas / WebGL RGB parity and animation", async () => {
+  const cpu = createMaterialRenderer("canvas2d", 33, 17);
+  const gpu = createMaterialRenderer("webgl", 33, 17);
+  let samples = 0, maximumDifference = 0, channels = 0;
+  try {
+    for (const preset of SHADER_PRESETS.filter(preset => preset.id >= 2)) {
+      let previous;
+      for (const time of [0.1, 0.7, 1.4]) {
+        for (const scale of [0.6, 1.5]) {
+          for (const softness of [0.1, 0.8]) {
+            const settings = { shader: preset.name, time, speed: 1, scale, softness, aspect: 2.6,
+              colors: [[1, 0.1, 0.2], [0.1, 0.04, 0.2], [1, 0.8, 0.5]] };
+            const expected = await pixels(cpu.render(settings));
+            const actual = await pixels(gpu.render(settings));
+            for (let index = 0; index < actual.length; index++) {
+              const difference = Math.abs(actual[index] - expected[index]);
+              maximumDifference = Math.max(maximumDifference, difference);
+              check(difference <= 2, `${preset.name}: RGB difference ${difference} at channel ${index}`);
+              if (index % 4 === 3) check(actual[index] === 255, "Material alpha must be opaque");
+            }
+            if (previous) check(actual.some((value, index) => value !== previous[index]), `${preset.name} produced no variation`);
+            previous = actual;
+            samples++; channels += actual.length;
+          }
+        }
+      }
+    }
+  } finally { cpu.dispose(); gpu.dispose(); }
+  return { samples, channels, maximumDifference };
+});
+
+const registration = await registerShaderFont();
+await run("browser registration", () => check(registration.ok, JSON.stringify(registration)));
+function host(shader, renderer = "webgl") {
+  const element = document.createElement("shader-font");
+  element.setAttribute("renderer", renderer); element.setAttribute("shader", shader);
+  element.setAttribute("dissolve-ms", "200"); element.setAttribute("restore-ms", "100");
+  element.style.cssText = "position:fixed;top:100px;left:20px;width:310px;font:700 26px/1.4 system-ui";
+  element.textContent = "앞쪽 유지 · 선택 영역 · 뒤쪽 유지";
+  document.body.append(element); return element;
+}
+function select(element) {
+  const rect = element.getBoundingClientRect();
+  const event = { pointerId: 1, pointerType: "mouse", button: 0, clientX: rect.left + 5, clientY: rect.top + 5, preventDefault() {} };
+  element.onPointerDown(event);
+  const range = document.createRange(); range.setStart(element.firstChild, 8); range.setEnd(element.firstChild, 13);
+  getSelection().removeAllRanges(); getSelection().addRange(range);
+  element.onPointerMove({ ...event, clientX: rect.left + 40 });
+  element.onPointerEnd({ ...event, type: "pointerup" });
+}
+
+await run("all presets clip to native text and compose with selection dissolve", async () => {
+  for (const preset of SHADER_PRESETS.filter(preset => preset.id >= 2)) {
+    const element = host(preset.name);
+    try {
+      await until(() => element.dataset.materialStatus === "ready" || element.rendererError, `${preset.name}: timed out waiting for material`);
+      check(element.dataset.materialStatus === "ready", `${preset.name}: material is not ready`);
+      const computed = getComputedStyle(element);
+      check(computed.backgroundClip.split(",").every(layer => layer.trim() === "text"), `Native glyph clipping is missing: ${computed.backgroundClip}`);
+      check(computed.webkitTextFillColor === "rgba(0, 0, 0, 0)", "Native fill is covering the material");
+      check(computed.backgroundImage.includes("url("), "Material image is not painted");
+      select(element);
+      await until(() => element.gesture.tag === "selected" && element.dissolve === 1 || element.rendererError,
+        `${preset.name}: dissolve state ${element.gesture.tag}, progress ${element.dissolve}`);
+      check(element.gesture.tag === "selected" && element.dissolve === 1, `${preset.name}: dissolve did not complete`);
+      check(element.maskSurface?.kind === "webgl", "Selected renderer did not render the mask");
+      check(getSelection().toString() === "선택 영역", "Native text selection was removed");
+      getSelection().removeAllRanges(); await until(() => element.gesture.tag === "idle", "Restore did not finish");
+      check(element.gesture.tag === "idle" && element.style.maskImage === "none", "Dissolve did not restore");
+      check(element.maskSurface === null, "Restored WebGL mask retained resources");
+    } finally { element.remove(); }
+    check(element.materialFrame === 0 && element.materialSurface === null, "Removed material retained work");
+  }
+});
+
+await run("viewport suspension releases GPU resources and does not advance hidden time", async () => {
+  const element = host("plasma");
+  try {
+    await until(() => element.dataset.materialStatus === "ready" || element.rendererError, "Material did not become ready");
+    const phase = element.materialElapsed;
+    element.style.top = "10000px";
+    await until(() => !element.inViewport && element.materialFrame === 0, "Offscreen playback did not pause");
+    check(!element.inViewport && element.materialFrame === 0, "Offscreen playback did not pause");
+    check(element.materialSurface === null, "Offscreen GPU resources were retained");
+    const pausedPhase = element.materialElapsed;
+    await delay(200);
+    check(element.materialElapsed === pausedPhase, "Offscreen phase advanced");
+    element.style.top = "100px";
+    await until(() => element.inViewport && element.materialSurface || element.rendererError, "Visible material did not resume");
+    await delay(70);
+    check(element.inViewport && element.dataset.materialStatus === "ready", "Visible playback did not resume");
+    check(element.materialElapsed > phase && element.materialElapsed < pausedPhase + 0.25, "Resume advanced hidden time");
+    element.setAttribute("speed", "0");
+    check(element.materialFrame === 0, "Speed zero still schedules frames");
+  } finally { element.remove(); }
+});
+
+await run("material context loss reveals ordinary DOM text without fallback", async () => {
+  const element = host("flame");
+  const errors = []; element.addEventListener("shaderfont-error", event => errors.push(event.detail));
+  try {
+    await until(() => element.materialSurface || element.rendererError, "Material context did not become ready");
+    const gl = element.materialSurface?.canvas.getContext("webgl2");
+    check(gl, "No WebGL material context");
+    gl.getExtension("WEBGL_lose_context").loseContext(); await delay(150);
+    check(errors.length === 1 && errors[0].phase === "material", "Material failure was not reported once");
+    check(element.materialSurface === null && element.materialFrame === 0, "A replacement renderer or frame was created");
+    check(getComputedStyle(element).webkitTextFillColor !== "rgba(0, 0, 0, 0)", "Failure left invisible text");
+    check(element.textContent.includes("선택 영역"), "Failure changed DOM text");
+  } finally { element.remove(); }
+});
+
+await run("Canvas material composes with dissolve and supports live editing", async () => {
+  const element = host("waves", "canvas2d");
+  try {
+    await until(() => element.dataset.materialStatus === "ready" || element.rendererError, "Canvas material did not become ready");
+    select(element);
+    await until(() => element.gesture.tag === "selected" && element.dissolve === 1 || element.rendererError, "Canvas dissolve did not complete");
+    check(element.gesture.tag === "selected" && element.maskSurface?.kind === "canvas2d", "Canvas composition failed");
+    element.setAttribute("drag-effect", "none");
+    element.textContent = "새로 쓴 한글 텍스트"; await delay(100);
+    check(element.gesture.tag === "idle" && element.style.maskImage === "none", "Editing kept stale mask state");
+    check(element.dataset.materialStatus === "ready" && element.textContent === "새로 쓴 한글 텍스트", "Editing lost the material or text");
+  } finally { element.remove(); }
+});
+
+document.querySelector("#results").textContent = JSON.stringify({ status: results.every(result => result.status === "pass") ? "pass" : "fail", results }, null, 2);
+</script>
+</html>

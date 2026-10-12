@@ -1,11 +1,19 @@
 {
   "name": "shaderfont",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Sentence-aware hologram text as a native Web Component.",
+  "description": "Animated materials and selection effects on DOM text, with Canvas 2D and WebGL renderers.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": { "types": "./src/index.d.ts", "import": "./src/index.js", "default": "./src/index.js" },
+    "./options": { "types": "./src/options.d.ts", "import": "./src/options.js", "default": "./src/options.js" },
+    "./browser": { "types": "./src/browser.d.ts", "import": "./src/shader-font.js", "default": "./src/shader-font.js" }
+  },
+  "files": ["src", "README.md"],
+  "sideEffects": ["./src/shader-font.js"],
   "scripts": {
-    "check": "node --check src/core.js && node --check src/shader-font.js && node --test",
+    "check": "node --check src/core.js && node --check src/index.js && node --check src/options.js && node --check src/presets.js && node --check src/webgl-surface.js && node --check src/material-core.js && node --check src/material-renderer.js && node --check src/mask-renderer.js && node --check src/reveal-core.js && node --check src/reveal-renderer.js && node --check src/shader-font-element.js && node --test",
     "demo": "node tools/serve.mjs"
   }
 }

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Shaderfont renderer checks</title>
+<style>
+  body { font: 16px/1.5 system-ui; padding: 24px; }
+  shader-font { font-size: 24px; margin: 12px 0; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>Renderer checks</h1>
+<pre id="results">Running</pre>
+<script type="module">
+import { createMaskField, renderMaskAlpha } from "../../src/core.js";
+import { createMaskRenderer } from "../../src/mask-renderer.js";
+import { registerShaderFont } from "../../src/index.js";
+
+const results = [];
+const resources = [];
+function check(condition, message) { if (!condition) throw new Error(message); }
+async function run(name, test) {
+  try { results.push({ name, status: "pass", ...await test() }); }
+  catch (error) { results.push({ name, status: "fail", error: error.message, code: error.code }); }
+}
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(condition, description, limit = 4000) {
+  const deadline = performance.now() + limit;
+  while (!condition() && performance.now() < deadline) await delay(20);
+  check(condition(), description);
+}
+async function pixels(url) {
+  const image = new Image();
+  image.src = url;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0);
+  const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  return Uint8Array.from({ length: rgba.length / 4 }, (_, index) => rgba[index * 4 + 3]);
+}
+function surface(kind, width, height) {
+  const renderer = createMaskRenderer(kind, width, height);
+  resources.push(renderer);
+  return renderer;
+}
+
+await run("real Canvas 2D / WebGL 2 PNG alpha parity", async () => {
+  let samples = 0, comparedPixels = 0, maximumDifference = 0;
+  for (const [width, height] of [[17, 9], [128, 48]]) {
+    const canvas2d = surface("canvas2d", width, height);
+    const webgl = surface("webgl", width, height);
+    for (const flow of ["reading", "ltr", "rtl", "random"]) {
+      for (const roughness of [0, 0.26, 0.48]) {
+        const field = createMaskField(width, height, {
+          seed: 728, flow, roughness,
+          regions: [{ x: 1, y: 1, width: width * 0.7, height: height * 0.25 },
+            { x: width * 0.35, y: height * 0.6, width: width * 0.6, height: height * 0.3 }]
+        });
+        for (const progress of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
+          const expected = renderMaskAlpha(field, progress);
+          const cpu = await pixels(canvas2d.render(field, progress));
+          const gpu = await pixels(webgl.render(field, progress));
+          for (let index = 0; index < expected.length; index++) {
+            check(cpu[index] === expected[index], `Canvas alpha differs at ${index}`);
+            const difference = Math.abs(gpu[index] - expected[index]);
+            maximumDifference = Math.max(maximumDifference, difference);
+            check(difference <= 1, `WebGL alpha differs by ${difference} at ${index}`);
+            if (!Number.isFinite(field.thresholds[index])) check(gpu[index] === 255, "Unselected pixel changed");
+            if (progress === 0) check(gpu[index] === 255, "Start pixel is not opaque");
+            if (progress === 1 && Number.isFinite(field.thresholds[index])) check(gpu[index] === 0, "End pixel is not transparent");
+          }
+          samples++;
+          comparedPixels += expected.length;
+        }
+      }
+    }
+    canvas2d.dispose();
+    webgl.dispose();
+  }
+  return { samples, comparedPixels, maximumDifference };
+});
+
+const registration = await registerShaderFont();
+await run("browser registration", () => { check(registration.ok, JSON.stringify(registration)); });
+function host(kind = "webgl") {
+  const element = document.createElement("shader-font");
+  element.setAttribute("renderer", kind);
+  element.setAttribute("dissolve-ms", "200");
+  element.setAttribute("restore-ms", "100");
+  element.textContent = "앞쪽 유지 · 선택 영역 · 뒤쪽 유지";
+  document.body.append(element);
+  resources.push({ dispose: () => element.remove() });
+  return element;
+}
+function begin(element) {
+  const rect = element.getBoundingClientRect();
+  const pointer = { pointerId: 1, pointerType: "mouse", button: 0,
+    clientX: rect.left + 5, clientY: rect.top + 5, preventDefault() {} };
+  element.onPointerDown(pointer);
+  const range = document.createRange();
+  range.setStart(element.firstChild, 8);
+  range.setEnd(element.firstChild, 13);
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  element.onPointerMove({ ...pointer, clientX: rect.left + 40 });
+  element.onPointerEnd({ ...pointer, type: "pointerup" });
+}
+
+await run("WebGL selection retention, deselection and resource release", async () => {
+  const element = host();
+  begin(element);
+  await until(() => element.dissolve === 1 || element.rendererError, "Dissolve did not complete");
+  check(element.gesture.tag === "selected", `State is ${element.gesture.tag}`);
+  check(element.dissolve === 1, `Progress is ${element.dissolve}`);
+  check(element.maskSurface?.kind === "webgl", "WebGL was not selected");
+  check(element.style.maskImage !== "none", "Selection mask disappeared on release");
+  check(getSelection().toString() === "선택 영역", "Selected DOM text was lost");
+  check(element.dissolveFrame === 0, "Completed selection is still scheduling frames");
+  getSelection().removeAllRanges();
+  await delay(250);
+  check(element.gesture.tag === "idle", "Deselection did not restore idle");
+  check(element.style.maskImage === "none", "Deselection did not restore text");
+  check(element.maskSurface === null, "Idle WebGL resources were retained");
+  check(element.restoreFrame === 0 && element.restoreTimer === 0, "Restore work was retained");
+});
+
+await run("WebGL context loss reveals text without fallback or retry", async () => {
+  const element = host();
+  const errors = [];
+  element.addEventListener("shaderfont-error", event => errors.push(event.detail));
+  begin(element);
+  await until(() => element.maskSurface || element.rendererError, "No active mask surface");
+  const surface = element.maskSurface;
+  check(surface?.kind === "webgl", "No active WebGL surface");
+  const gl = surface.canvas.getContext("webgl2");
+  const extension = gl.getExtension("WEBGL_lose_context");
+  check(extension, "Context-loss extension unavailable");
+  extension.loseContext();
+  await delay(150);
+  check(errors.length === 1, `Expected one error, got ${errors.length}`);
+  check(errors[0].code === "WEBGL_CONTEXT_LOST", JSON.stringify(errors));
+  check(element.maskSurface === null, "A replacement renderer was silently created");
+  check(element.gesture.tag === "idle" && element.style.maskImage === "none", "Text was not revealed");
+  check(element.dissolveFrame === 0 && element.restoreFrame === 0 && element.restoreTimer === 0, "Work was not cancelled");
+  check(getSelection().toString() === "선택 영역", "Context loss removed the native selection");
+});
+
+await run("switching WebGL to Canvas disposes the context and accepts another selection", async () => {
+  const element = host();
+  begin(element);
+  await until(() => element.maskSurface || element.rendererError, "No active mask surface");
+  const canvas = element.maskSurface?.canvas;
+  check(canvas, "No WebGL canvas");
+  element.setAttribute("renderer", "canvas2d");
+  check(canvas.width === 0 && canvas.height === 0, "Old surface was not disposed");
+  check(element.style.maskImage === "none" && element.gesture.tag === "idle", "Old gesture was not cancelled");
+  begin(element);
+  await until(() => element.dissolve === 1 || element.rendererError, "Dissolve did not complete");
+  check(element.maskSurface?.kind === "canvas2d", "New renderer was not Canvas 2D");
+  check(element.gesture.tag === "selected" && element.dissolve === 1, "New selection did not complete");
+  element.remove();
+  check(element.maskSurface === null && element.dissolveFrame === 0, "Disconnect retained resources");
+});
+
+await run("disabling drag effects releases WebGL resources and keeps DOM text", async () => {
+  const element = host();
+  const text = element.textContent;
+  begin(element);
+  await until(() => element.maskSurface || element.rendererError, "No active mask surface");
+  const canvas = element.maskSurface?.canvas;
+  check(canvas, "No WebGL surface");
+  element.setAttribute("drag-effect", "none");
+  check(canvas.width === 0 && element.maskSurface === null, "Disabled effect retained WebGL resources");
+  check(element.style.maskImage === "none" && element.gesture.tag === "idle", "Disabled effect retained the mask");
+  check(element.textContent === text, "DOM text was changed");
+  check(element.dissolveFrame === 0 && element.restoreFrame === 0, "Disabled effect retained animation frames");
+});
+
+for (const resource of resources) resource.dispose();
+document.querySelector("#results").textContent = JSON.stringify({
+  status: results.every(result => result.status === "pass") ? "pass" : "fail", results
+}, null, 2);
+</script>
+</html>

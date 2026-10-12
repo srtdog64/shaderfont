@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Shaderfont burn reveal checks</title>
+<style>body { font: 16px/1.5 system-ui; padding: 20px; } pre { white-space: pre-wrap; }</style>
+<h1>Burn reveal checks</h1><pre id="results">Running</pre>
+<script type="module">
+import { createRevealField } from "../../src/reveal-core.js";
+import { createRevealRenderer } from "../../src/reveal-renderer.js";
+import { SHADER_PRESETS } from "../../src/presets.js";
+import { registerShaderFont } from "../../src/index.js";
+
+const results = [];
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+function check(condition, message) { if (!condition) throw new Error(message); }
+async function until(condition, message, limit = 4000) {
+  const deadline = performance.now() + limit;
+  while (!condition() && performance.now() < deadline) await delay(20);
+  check(condition(), typeof message === "function" ? message() : message);
+}
+async function run(name, test) {
+  document.querySelector("#results").textContent = JSON.stringify({ status: "running", current: name, results }, null, 2);
+  try {
+    await until(() => !document.hidden, "The test page must be visible");
+    results.push({ name, status: "pass", ...await test() });
+  } catch (error) { results.push({ name, status: "fail", error: error.message, code: error.code }); }
+}
+async function pixels(url) {
+  const image = new Image(); image.src = url; await image.decode();
+  const canvas = document.createElement("canvas"); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
+  return context.getImageData(0, 0, canvas.width, canvas.height).data;
+}
+await run("Canvas / WebGL coverage and premultiplied burn-edge parity", async () => {
+  const cpu = createRevealRenderer("canvas2d", 39, 17);
+  const gpu = createRevealRenderer("webgl", 39, 17);
+  let samples = 0, maximumAlphaDifference = 0, maximumColorDifference = 0;
+  try {
+    for (const seed of [42, 1234]) {
+      const field = createRevealField(39, 17, seed);
+      for (const progress of [0, 0.13, 0.37, 0.5, 0.72, 0.91, 1]) {
+        const expected = cpu.render(field, progress), actual = gpu.render(field, progress);
+        for (const layer of ["mask", "edge"]) {
+          const a = await pixels(expected[layer]), b = await pixels(actual[layer]);
+          for (let offset = 0; offset < a.length; offset += 4) {
+            const alphaDifference = Math.abs(a[offset + 3] - b[offset + 3]);
+            maximumAlphaDifference = Math.max(maximumAlphaDifference, alphaDifference);
+            check(alphaDifference <= 1, `${layer} alpha differs by ${alphaDifference}`);
+            for (let channel = 0; channel < 3; channel++) {
+              // PNG export unpremultiplies differently near alpha zero; compare visible energy.
+              const difference = Math.abs(a[offset + channel] * a[offset + 3] / 255 - b[offset + channel] * b[offset + 3] / 255);
+              maximumColorDifference = Math.max(maximumColorDifference, difference);
+              check(difference <= 2, `${layer} premultiplied RGB differs by ${difference}; seed=${seed}, progress=${progress}, offset=${offset}, CPU=${Array.from(a.slice(offset, offset + 4))}, GPU=${Array.from(b.slice(offset, offset + 4))}`);
+            }
+          }
+          if (progress === 0 || progress === 1) {
+            check(b.every((value, index) => index % 4 !== 3 || value === (layer === "mask" ? progress * 255 : 0)), "Endpoint is not exact");
+          }
+          samples++;
+        }
+      }
+    }
+  } finally { cpu.dispose(); gpu.dispose(); }
+  return { samples, maximumAlphaDifference, maximumColorDifference };
+});
+
+const registration = await registerShaderFont();
+await run("browser registration", () => check(registration.ok, JSON.stringify(registration)));
+function host(shader = "none", renderer = "canvas2d") {
+  const element = document.createElement("shader-font");
+  element.setAttribute("shader", shader); element.setAttribute("renderer", renderer);
+  element.setAttribute("reveal-effect", "burn"); element.setAttribute("reveal-ms", "800");
+  element.setAttribute("reveal-interval-ms", "0"); element.setAttribute("drag-effect", "none");
+  element.setAttribute("dissolve-ms", "200"); element.setAttribute("restore-ms", "100");
+  element.style.cssText = "position:fixed;top:100px;left:20px;width:310px;color:#bcddee;font:700 26px/1.4 system-ui";
+  element.textContent = "앞쪽 유지 · 선택 영역 · 뒤쪽 유지";
+  document.body.append(element); return element;
+}
+function select(element) {
+  const rect = element.getBoundingClientRect();
+  const event = { pointerId: 1, pointerType: "mouse", button: 0, clientX: rect.left + 5, clientY: rect.top + 5, preventDefault() {} };
+  element.onPointerDown(event);
+  const range = document.createRange(); range.setStart(element.firstChild, 8); range.setEnd(element.firstChild, 13);
+  getSelection().removeAllRanges(); getSelection().addRange(range);
+  element.onPointerMove({ ...event, clientX: rect.left + 40 });
+  element.onPointerEnd({ ...event, type: "pointerup" });
+}
+await run("burn reveal clips to native glyphs with all eight materials and both renderers", async () => {
+  let combinations = 0;
+  for (const renderer of ["canvas2d", "webgl"]) {
+    for (const preset of SHADER_PRESETS) {
+      const element = host(preset.name, renderer);
+      element.setAttribute("reveal-ms", "10000");
+      try {
+        await until(() => element.revealProgress > 0.02 && element.dataset.revealStatus === "ready" || element.rendererError,
+          () => `${renderer}/${preset.name}: reveal never became ready (state=${element.dataset.revealState}, status=${element.dataset.revealStatus}, progress=${element.revealProgress}, visible=${element.inViewport})`);
+        check(!element.rendererError, element.rendererError?.message);
+        const computed = getComputedStyle(element);
+        check(computed.backgroundClip.split(",").every(layer => layer.trim() === "text"), `${preset.name}: effect is not glyph-clipped: ${computed.backgroundClip}`);
+        check(computed.webkitTextFillColor === "rgba(0, 0, 0, 0)", `${preset.name}: native fill covers burning edge`);
+        check(computed.backgroundImage.includes("url("), "Burn edge is not painted");
+        check(element.revealSurface?.kind === renderer, "Reveal changed renderer");
+        check(element.style.maskImage === element.revealMaskImage, "Reveal mask is not installed");
+        combinations++;
+      } finally { element.remove(); }
+      check(element.revealSurface === null && element.revealFrame === 0 && element.revealTimer === 0, "Removed reveal retained work");
+    }
+  }
+  return { combinations };
+});
+
+await run("automatic reveal intersects only selected dissolve and retains native selection", async () => {
+  for (const renderer of ["canvas2d", "webgl"]) {
+    const element = host("plasma", renderer);
+    element.setAttribute("reveal-ms", "10000"); element.setAttribute("drag-effect", "dissolve");
+    try {
+      await until(() => element.revealSurface || element.rendererError, "Reveal did not initialize");
+      check(!element.rendererError, element.rendererError?.message);
+      select(element);
+      await until(() => element.dissolve === 1 || element.rendererError, "Selection dissolve did not finish");
+      check(!element.rendererError, element.rendererError?.message);
+      check(getSelection().toString() === "선택 영역", "Selection disappeared");
+      check(getComputedStyle(element).maskComposite.startsWith("intersect"), "Masks were not intersected");
+      check(element.style.maskImage.includes(","), "One mask clobbered the other");
+      const field = element.maskField, mask = await pixels(element.maskSurface.render(field, 1));
+      for (let index = 0; index < field.thresholds.length; index++) {
+        check(mask[index * 4 + 3] === (Number.isFinite(field.thresholds[index]) ? 0 : 255), "Dissolve touched pixels outside selection");
+      }
+      element.setAttribute("reveal-effect", "none");
+      check(element.style.maskImage === element.dissolveMaskImage, "Disabling reveal removed selected dissolve");
+      check(getSelection().toString() === "선택 영역", "Option change removed selection");
+      element.setAttribute("reveal-effect", "burn");
+      await until(() => element.dataset.revealStatus === "ready", "Reveal did not restart");
+      getSelection().removeAllRanges();
+      await until(() => element.gesture.tag === "idle", "Selected dissolve did not restore");
+      check(element.style.maskImage === element.revealMaskImage && element.revealProgress < 1, "Restore removed active automatic reveal");
+    } finally { element.remove(); }
+  }
+});
+
+await run("one-shot completion is fully visible and replay does not change editable DOM", async () => {
+  const element = host();
+  element.setAttribute("reveal-ms", "200"); element.setAttribute("contenteditable", "true");
+  try {
+    await until(() => element.dataset.revealState === "complete" || element.rendererError, "One-shot never completed");
+    check(element.style.maskImage === "none" && element.revealSurface === null && element.revealFrame === 0 && element.revealTimer === 0,
+      "Completion retained a mask or work");
+    check(getComputedStyle(element).webkitTextFillColor !== "rgba(0, 0, 0, 0)", "Completion left text invisible");
+    element.textContent = "편집한 글자도 그대로 남습니다";
+    await delay(50); element.restartReveal();
+    await until(() => element.dataset.revealStatus === "ready", "Replay never started");
+    check(element.textContent === "편집한 글자도 그대로 남습니다" && element.childNodes.length === 1, "Replay cloned or modified the DOM");
+  } finally { element.remove(); }
+});
+
+await run("offscreen reveal pauses its clock and releases its GPU context", async () => {
+  const element = host("none", "webgl"); element.setAttribute("reveal-ms", "10000");
+  try {
+    await until(() => element.revealProgress > 0.02 || element.rendererError, "Reveal never progressed");
+    element.style.top = "10000px";
+    await until(() => !element.inViewport && element.revealFrame === 0, "Offscreen reveal did not pause");
+    check(element.revealSurface === null, "Offscreen GPU context was retained");
+    const elapsed = element.revealElapsed;
+    await delay(150); check(element.revealElapsed === elapsed, "Offscreen elapsed time changed");
+    element.style.top = "100px";
+    await until(() => element.revealSurface || element.rendererError, "Reveal never resumed");
+    check(element.revealElapsed < elapsed + 100, "Resuming counted invisible time");
+  } finally { element.remove(); }
+});
+
+await run("reveal context loss restores ordinary text without retry or fallback", async () => {
+  const element = host("none", "webgl");
+  const errors = []; element.addEventListener("shaderfont-error", event => errors.push(event.detail));
+  try {
+    await until(() => element.revealSurface || element.rendererError, "Reveal context not initialized");
+    const gl = element.revealSurface?.canvas.getContext("webgl2"); check(gl, "WebGL context missing");
+    gl.getExtension("WEBGL_lose_context").loseContext();
+    await until(() => errors.length > 0, "Context loss was not reported");
+    check(errors.length === 1 && errors[0].phase === "reveal", "Failure did not identify the reveal phase");
+    check(element.style.maskImage === "none" && element.revealSurface === null && element.revealFrame === 0, "Failure retained hidden text or work");
+    check(getComputedStyle(element).webkitTextFillColor !== "rgba(0, 0, 0, 0)", "Failure text is not readable");
+    await delay(150); check(errors.length === 1 && element.revealSurface === null, "Failure retried automatically");
+  } finally { element.remove(); }
+});
+
+document.querySelector("#results").textContent = JSON.stringify({ status: results.every(result => result.status === "pass") ? "pass" : "fail", results }, null, 2);
+document.querySelector("#results").dataset.complete = "true";
+</script>
+</html>
