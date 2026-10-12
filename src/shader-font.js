@@ -1,13 +1,19 @@
 import {
+  DragEffect,
   GestureTag,
   activeGesture,
   assertGestureTransition,
   clamp,
+  createElasticTransform,
   createErosionField,
   createMaskAlpha,
+  dampedSpringFactor,
+  dissolveProgress,
   hashText,
   idleGesture,
   pressedGesture,
+  resolveDragEffect,
+  resolveShaderPreset,
   restoringGesture
 } from "./core.js";
 
@@ -15,8 +21,11 @@ const STYLE_ID = "shader-font-component-styles";
 const MASK_STEPS = 24;
 const MASK_CACHE_LIMIT = 12;
 const DRAG_THRESHOLD = 5;
+const DEFAULT_DISSOLVE_MS = 1800;
 const DEFAULT_RESTORE_MS = 1800;
 const RESTORE_HOLD_MS = 420;
+const SHAKE_RESTORE_MS = 180;
+const ELASTIC_RESTORE_MS = 900;
 const DEFAULT_COLORS = Object.freeze({
   primary: "#69efff",
   secondary: "#ff946a",
@@ -32,6 +41,17 @@ function ensureStyles() {
     shaderfont {
       --sf-x: 0px;
       --sf-y: 0px;
+      --sf-effect-x: 0px;
+      --sf-effect-y: 0px;
+      --sf-effect-rotate: 0deg;
+      --sf-effect-scale-x: 1;
+      --sf-effect-scale-y: 1;
+      --sf-shake-small: 1px;
+      --sf-shake-large: 3px;
+      --sf-shake-neg-small: -1px;
+      --sf-shake-neg-large: -3px;
+      --sf-shake-angle: .45deg;
+      --sf-shake-neg-angle: -.45deg;
       --sf-fade: 1;
       --_sf-primary: ${DEFAULT_COLORS.primary};
       --_sf-secondary: ${DEFAULT_COLORS.secondary};
@@ -67,7 +87,11 @@ function ensureStyles() {
         drop-shadow(0 0 .035em color-mix(in srgb, var(--sf-accent, var(--_sf-accent)) 94%, transparent))
         drop-shadow(0 0 .16em color-mix(in srgb, var(--sf-secondary, var(--_sf-secondary)) 38%, transparent))
         drop-shadow(0 0 .28em color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 24%, transparent));
-      transform: translate3d(var(--sf-x), var(--sf-y), 0);
+      transform:
+        translate3d(var(--sf-x), var(--sf-y), 0)
+        translate3d(var(--sf-effect-x), var(--sf-effect-y), 0)
+        rotate(var(--sf-effect-rotate))
+        scale(var(--sf-effect-scale-x), var(--sf-effect-scale-y));
       transform-origin: center;
       opacity: var(--sf-fade);
       caret-color: var(--sf-primary, var(--_sf-primary));
@@ -80,24 +104,60 @@ function ensureStyles() {
       animation:
         shader-font-scan 1.8s linear infinite,
         shader-font-outline-jitter 1.35s steps(1, end) infinite;
-      will-change: transform, filter, opacity, text-shadow, -webkit-mask-image;
+      will-change: transform, translate, rotate, filter, opacity, text-shadow, -webkit-mask-image;
     }
 
     shader-font[block], shaderfont[block] { display: block; }
-    shader-font[interaction="move"], shaderfont[interaction="move"] {
+    shader-font[data-drag-effect="move"], shaderfont[data-drag-effect="move"],
+    shader-font[data-drag-effect="shake"], shaderfont[data-drag-effect="shake"],
+    shader-font[data-drag-effect="elastic"], shaderfont[data-drag-effect="elastic"] {
       cursor: grab;
       touch-action: none;
     }
-    shader-font[interaction="move"].is-dragging { cursor: grabbing; user-select: none; }
+    shader-font.is-dragging, shaderfont.is-dragging { cursor: grabbing; user-select: none; }
     shader-font[interaction="none"] { pointer-events: none; }
     shader-font[contenteditable]:focus {
       outline: 1px solid color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 38%, transparent);
       outline-offset: .16em;
     }
-    shader-font::selection {
+    shader-font[data-drag-effect="dissolve"]::selection,
+    shaderfont[data-drag-effect="dissolve"]::selection {
       color: transparent;
       -webkit-text-fill-color: transparent;
-      background: color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 28%, transparent);
+      background: transparent;
+    }
+
+    shader-font[data-shader="none"],
+    shaderfont[data-shader="none"] {
+      color: inherit;
+      -webkit-text-fill-color: currentColor;
+      background: none;
+      background-clip: border-box;
+      -webkit-background-clip: border-box;
+      background-blend-mode: normal;
+      text-shadow: none;
+      filter: none;
+      animation: none;
+    }
+
+    shader-font[data-drag-effect="none"]::selection,
+    shaderfont[data-drag-effect="none"]::selection {
+      color: HighlightText;
+      -webkit-text-fill-color: HighlightText;
+      background: Highlight;
+    }
+
+    shader-font[data-drag-effect="shake"].is-effect-active,
+    shaderfont[data-drag-effect="shake"].is-effect-active {
+      animation:
+        shader-font-scan 1.8s linear infinite,
+        shader-font-outline-jitter 1.35s steps(1, end) infinite,
+        shader-font-drag-shake 115ms steps(2, end) infinite;
+    }
+
+    shader-font[data-shader="none"][data-drag-effect="shake"].is-effect-active,
+    shaderfont[data-shader="none"][data-drag-effect="shake"].is-effect-active {
+      animation: shader-font-drag-shake 115ms steps(2, end) infinite;
     }
 
     @keyframes shader-font-scan { to { background-position: 0 7px, 0 0; } }
@@ -109,9 +169,15 @@ function ensureStyles() {
       67% { text-shadow: -.062em 0 var(--sf-primary, var(--_sf-primary)), .032em .004em var(--sf-secondary, var(--_sf-secondary)); }
       83% { text-shadow: .036em -.003em var(--sf-primary, var(--_sf-primary)), -.022em .003em var(--sf-secondary, var(--_sf-secondary)); }
     }
+    @keyframes shader-font-drag-shake {
+      0%, 100% { translate: var(--sf-shake-neg-small) var(--sf-shake-small); rotate: var(--sf-shake-neg-angle); }
+      25% { translate: var(--sf-shake-large) var(--sf-shake-neg-small); rotate: var(--sf-shake-angle); }
+      50% { translate: var(--sf-shake-neg-large) var(--sf-shake-neg-small); rotate: var(--sf-shake-angle); }
+      75% { translate: var(--sf-shake-small) var(--sf-shake-small); rotate: var(--sf-shake-neg-angle); }
+    }
 
     @media (prefers-reduced-motion: reduce) {
-      shader-font, shaderfont { animation: none; }
+      shader-font, shaderfont { animation: none !important; translate: none; rotate: none; }
     }
   `;
   document.head.append(style);
@@ -127,14 +193,35 @@ function numberAttribute(element, name, fallback, minimum, maximum) {
   return Number.isFinite(parsed) ? clamp(parsed, minimum, maximum) : fallback;
 }
 
-function selectionFraction(element) {
+function ownedSelection(element) {
   const selection = document.getSelection();
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return 0;
-  const range = selection.getRangeAt(0);
-  if (!element.contains(range.commonAncestorContainer)) return 0;
-  const total = Array.from(element.textContent ?? "").length;
-  const selected = Array.from(selection.toString()).length;
-  return total === 0 ? 0 : clamp(selected / total, 0, 1);
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  if (!selection.anchorNode || !selection.focusNode) return null;
+  if (!element.contains(selection.anchorNode) || !element.contains(selection.focusNode)) return null;
+  return { selection, range: selection.getRangeAt(0) };
+}
+
+function selectionGeometry(element) {
+  const owned = ownedSelection(element);
+  if (!owned) return null;
+  const host = element.getBoundingClientRect();
+  const rects = Array.from(owned.range.getClientRects(), rect => {
+    const left = clamp(rect.left - host.left, 0, host.width);
+    const top = clamp(rect.top - host.top, 0, host.height);
+    const right = clamp(rect.right - host.left, 0, host.width);
+    const bottom = clamp(rect.bottom - host.top, 0, host.height);
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  }).filter(rect => rect.width > 0.25 && rect.height > 0.25);
+  if (rects.length === 0) return null;
+  return rects;
+}
+
+function sameRegions(left, right) {
+  if (left.length !== right.length) return false;
+  return left.every((region, index) => {
+    const other = right[index];
+    return ["x", "y", "width", "height"].every(key => Math.abs(region[key] - other[key]) < 0.01);
+  });
 }
 
 function alphaToMaskUrl(width, height, alpha) {
@@ -157,7 +244,7 @@ function alphaToMaskUrl(width, height, alpha) {
 
 export class ShaderFont extends HTMLElement {
   static get observedAttributes() {
-    return ["primary", "secondary", "accent", "flow", "roughness", "restore-ms", "interaction"];
+    return ["shader", "primary", "secondary", "accent", "flow", "roughness", "dissolve-ms", "restore-ms", "interaction", "drag-effect"];
   }
 
   constructor() {
@@ -166,10 +253,14 @@ export class ShaderFont extends HTMLElement {
     this.offsetX = 0;
     this.offsetY = 0;
     this.dissolve = 0;
+    this.effectProgress = 0;
+    this.elasticMotion = createElasticTransform(0, 0, 1);
     this.restoreToken = 0;
     this.restoreTimer = 0;
-    this.maskFrame = 0;
-    this.pendingDissolve = null;
+    this.dissolveFrame = 0;
+    this.dissolveStartedAt = 0;
+    this.selectionRegions = [];
+    this.regionRevision = 0;
     this.maskCache = new Map();
     this.textureCache = new Map();
     this.resizeObserver = new ResizeObserver(() => this.invalidateMask());
@@ -197,7 +288,7 @@ export class ShaderFont extends HTMLElement {
 
   disconnectedCallback() {
     this.cancelRestore();
-    this.cancelQueuedDissolve();
+    this.stopDissolveClock();
     this.removeEventListener("pointerdown", this.onPointerDown);
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerEnd);
@@ -208,9 +299,12 @@ export class ShaderFont extends HTMLElement {
     delete this.dataset.shaderFontBound;
   }
 
-  attributeChangedCallback() {
+  attributeChangedCallback(name, oldValue, newValue) {
     if (!this.isConnected) return;
     this.applyAttributes();
+    if (oldValue !== newValue && (name === "drag-effect" || name === "interaction")) {
+      this.resetInteractionForOptionChange();
+    }
     this.invalidateMask();
   }
 
@@ -219,11 +313,40 @@ export class ShaderFont extends HTMLElement {
       this.style.setProperty(`--_sf-${name}`, colorOrDefault(this, name));
     }
     if (!this.hasAttribute("interaction")) this.setAttribute("interaction", "select");
+    this.dataset.shader = this.shaderPreset();
+    this.dataset.dragEffect = this.dragEffect();
+  }
+
+  shaderPreset() {
+    return resolveShaderPreset(this.getAttribute("shader"));
   }
 
   interaction() {
     const value = this.getAttribute("interaction") ?? "select";
-    return value === "move" || value === "none" ? value : "select";
+    if (value === "none") return "none";
+    const effect = this.dragEffect();
+    if (effect === DragEffect.NONE) return "none";
+    return effect === DragEffect.DISSOLVE ? "select" : "direct";
+  }
+
+  dragEffect() {
+    return resolveDragEffect(this.getAttribute("drag-effect"), this.getAttribute("interaction") ?? "select");
+  }
+
+  resetInteractionForOptionChange() {
+    this.cancelRestore();
+    this.stopDissolveClock();
+    const state = this.gesture;
+    if ((state.tag === GestureTag.PRESSED || state.tag === GestureTag.ACTIVE) && this.hasPointerCapture(state.pointerId)) {
+      this.releasePointerCapture(state.pointerId);
+    }
+    this.classList.remove("is-dragging", "is-effect-active");
+    this.resetTransientEffect();
+    this.clearSelectionRegions();
+    const owned = ownedSelection(this);
+    if (owned) owned.selection.removeAllRanges();
+    this.transitionTo(idleGesture());
+    this.publishProgress(0, this.dragEffect());
   }
 
   flow() {
@@ -237,7 +360,7 @@ export class ShaderFont extends HTMLElement {
     this.dataset.shaderFontState = next.tag;
     this.dispatchEvent(new CustomEvent("shaderfont-state", {
       bubbles: true,
-      detail: { state: next.tag, mode: next.mode ?? null }
+      detail: { state: next.tag, mode: next.mode ?? null, effect: next.effect ?? this.dragEffect() }
     }));
   }
 
@@ -245,16 +368,23 @@ export class ShaderFont extends HTMLElement {
     const mode = this.interaction();
     if (mode === "none" || (event.pointerType === "mouse" && event.button !== 0)) return;
     if (this.gesture.tag === GestureTag.PRESSED || this.gesture.tag === GestureTag.ACTIVE) return;
+    const effect = this.dragEffect();
     this.cancelRestore();
+    this.stopDissolveClock();
+    this.resetTransientEffect();
+    this.clearSelectionRegions();
+    const rect = this.getBoundingClientRect();
+    this.style.transformOrigin = `${event.clientX - rect.left}px ${event.clientY - rect.top}px`;
     this.transitionTo(pressedGesture(
       mode,
       event.pointerId,
       event.clientX,
       event.clientY,
       this.offsetX,
-      this.offsetY
+      this.offsetY,
+      effect
     ));
-    if (mode === "move") {
+    if (mode === "direct") {
       event.preventDefault();
       this.setPointerCapture(event.pointerId);
     }
@@ -270,22 +400,36 @@ export class ShaderFont extends HTMLElement {
       if (distance < DRAG_THRESHOLD) return;
       state = activeGesture(state);
       this.transitionTo(state);
-      if (state.mode === "move") this.classList.add("is-dragging");
+      if (state.mode === "direct") this.classList.add("is-dragging");
     }
 
-    if (state.mode === "move") {
+    if (state.effect === DragEffect.DISSOLVE) {
+      this.startDissolveClock();
+      return;
+    }
+
+    const width = Math.max(120, this.getBoundingClientRect().width);
+    const travelled = clamp(distance / (width * 0.82), 0, 1);
+    if (state.effect === DragEffect.MOVE) {
       event.preventDefault();
       this.offsetX = state.baseX + dx;
       this.offsetY = state.baseY + dy;
       this.style.setProperty("--sf-x", `${this.offsetX}px`);
       this.style.setProperty("--sf-y", `${this.offsetY}px`);
+      this.publishProgress(travelled, state.effect);
+      return;
+    }
+    if (state.effect === DragEffect.SHAKE) {
+      event.preventDefault();
+      this.setShake(travelled);
+      return;
+    }
+    if (state.effect === DragEffect.ELASTIC) {
+      event.preventDefault();
+      this.setElastic(createElasticTransform(dx, dy, width));
+      return;
     }
 
-    const width = Math.max(120, this.getBoundingClientRect().width);
-    const selected = state.mode === "select" ? selectionFraction(this) : 0;
-    const travelled = clamp(distance / (width * 0.82), 0, 1);
-    const progress = clamp(Math.max(selected, travelled) * 0.98, 0.06, 0.98);
-    this.queueDissolve(progress);
   }
 
   onPointerEnd(event) {
@@ -293,8 +437,7 @@ export class ShaderFont extends HTMLElement {
     if ((state.tag !== GestureTag.PRESSED && state.tag !== GestureTag.ACTIVE) || event.pointerId !== state.pointerId) return;
     this.classList.remove("is-dragging");
     if (this.hasPointerCapture(event.pointerId)) this.releasePointerCapture(event.pointerId);
-    this.flushQueuedDissolve();
-    this.restoreDissolve();
+    this.finishGesture(state);
   }
 
   onWindowBlur() {
@@ -302,35 +445,69 @@ export class ShaderFont extends HTMLElement {
     if (state.tag !== GestureTag.PRESSED && state.tag !== GestureTag.ACTIVE) return;
     this.classList.remove("is-dragging");
     if (this.hasPointerCapture(state.pointerId)) this.releasePointerCapture(state.pointerId);
-    this.flushQueuedDissolve();
+    this.finishGesture(state);
+  }
+
+  finishGesture(state) {
+    if (state.effect === DragEffect.MOVE) {
+      this.effectProgress = 0;
+      this.publishProgress(0, state.effect);
+      this.transitionTo(idleGesture());
+      return;
+    }
+    if (state.effect === DragEffect.SHAKE) {
+      this.restoreShake();
+      return;
+    }
+    if (state.effect === DragEffect.ELASTIC) {
+      this.restoreElastic();
+      return;
+    }
+    this.captureSelectionRegions();
+    this.stopDissolveClock();
     this.restoreDissolve();
   }
 
-  queueDissolve(progress) {
-    this.pendingDissolve = clamp(progress, 0, 1);
-    if (this.maskFrame !== 0) return;
-    this.maskFrame = requestAnimationFrame(() => {
-      this.maskFrame = 0;
-      const pending = this.pendingDissolve;
-      this.pendingDissolve = null;
-      if (pending !== null) this.setDissolve(pending);
-    });
+  startDissolveClock() {
+    if (this.dissolveFrame !== 0) return;
+    if (this.dissolveStartedAt === 0) this.dissolveStartedAt = performance.now();
+    const tick = now => {
+      const state = this.gesture;
+      if (state.tag !== GestureTag.ACTIVE || state.effect !== DragEffect.DISSOLVE) {
+        this.dissolveFrame = 0;
+        return;
+      }
+      const hasSelection = this.captureSelectionRegions();
+      const duration = numberAttribute(this, "dissolve-ms", DEFAULT_DISSOLVE_MS, 200, 10_000);
+      const progress = dissolveProgress(now - this.dissolveStartedAt, duration);
+      if (hasSelection) this.setDissolve(progress);
+      this.dissolveFrame = progress < 1 ? requestAnimationFrame(tick) : 0;
+    };
+    this.dissolveFrame = requestAnimationFrame(tick);
   }
 
-  flushQueuedDissolve() {
-    if (this.maskFrame !== 0) {
-      cancelAnimationFrame(this.maskFrame);
-      this.maskFrame = 0;
+  stopDissolveClock() {
+    if (this.dissolveFrame !== 0) cancelAnimationFrame(this.dissolveFrame);
+    this.dissolveFrame = 0;
+    this.dissolveStartedAt = 0;
+  }
+
+  captureSelectionRegions() {
+    const regions = selectionGeometry(this);
+    if (!regions) return this.selectionRegions.length > 0;
+    if (sameRegions(this.selectionRegions, regions)) return true;
+    this.selectionRegions = regions;
+    this.regionRevision += 1;
+    this.maskCache.clear();
+    return true;
+  }
+
+  clearSelectionRegions() {
+    if (this.selectionRegions.length > 0) {
+      this.selectionRegions = [];
+      this.regionRevision += 1;
+      this.maskCache.clear();
     }
-    const pending = this.pendingDissolve;
-    this.pendingDissolve = null;
-    if (pending !== null) this.setDissolve(pending);
-  }
-
-  cancelQueuedDissolve() {
-    if (this.maskFrame !== 0) cancelAnimationFrame(this.maskFrame);
-    this.maskFrame = 0;
-    this.pendingDissolve = null;
   }
 
   invalidateMask() {
@@ -358,7 +535,13 @@ export class ShaderFont extends HTMLElement {
     const roughness = numberAttribute(this, "roughness", 0.26, 0, 0.48);
     const step = Math.min(MASK_STEPS, Math.max(1, Math.round(progress * MASK_STEPS)));
     const seed = hashText(this.textContent ?? "");
-    const key = [width, height, Math.round(lineHeight), flow, direction, roughness, step, seed].join(":");
+    const regions = this.selectionRegions.map(region => ({
+      x: region.x * scale,
+      y: region.y * scale,
+      width: region.width * scale,
+      height: region.height * scale
+    }));
+    const key = [width, height, Math.round(lineHeight), flow, direction, roughness, step, seed, this.regionRevision].join(":");
     if (this.maskCache.has(key)) {
       const cached = this.maskCache.get(key);
       this.maskCache.delete(key);
@@ -380,7 +563,8 @@ export class ShaderFont extends HTMLElement {
       lineHeight,
       roughness,
       seed,
-      texture
+      texture,
+      regions
     });
     const mask = alphaToMaskUrl(width, height, alpha);
     this.maskCache.set(key, mask);
@@ -396,15 +580,72 @@ export class ShaderFont extends HTMLElement {
     this.style.webkitMaskImage = mask || "none";
     this.style.maskImage = mask || "none";
     this.style.setProperty("--sf-fade", (1 - this.dissolve * 0.1).toFixed(3));
+    this.classList.toggle("is-effect-active", this.dissolve > 0.001);
+    this.publishProgress(this.dissolve, DragEffect.DISSOLVE);
+  }
+
+  publishProgress(progress, effect = this.dragEffect()) {
+    this.effectProgress = clamp(progress, 0, 1);
     this.dispatchEvent(new CustomEvent("shaderfont-progress", {
       bubbles: true,
       detail: {
         dissolve: this.dissolve,
+        progress: this.effectProgress,
+        effect,
         state: this.gesture.tag,
         x: this.offsetX,
         y: this.offsetY
       }
     }));
+  }
+
+  setShake(progress) {
+    const amount = clamp(progress, 0, 1);
+    const small = 0.7 + amount * 2.1;
+    const large = 1.8 + amount * 5.2;
+    const angle = 0.25 + amount * 1.15;
+    this.style.setProperty("--sf-shake-small", `${small.toFixed(2)}px`);
+    this.style.setProperty("--sf-shake-large", `${large.toFixed(2)}px`);
+    this.style.setProperty("--sf-shake-neg-small", `${(-small).toFixed(2)}px`);
+    this.style.setProperty("--sf-shake-neg-large", `${(-large).toFixed(2)}px`);
+    this.style.setProperty("--sf-shake-angle", `${angle.toFixed(2)}deg`);
+    this.style.setProperty("--sf-shake-neg-angle", `${(-angle).toFixed(2)}deg`);
+    this.classList.add("is-effect-active");
+    this.publishProgress(amount, DragEffect.SHAKE);
+  }
+
+  applyElasticMotion(motion) {
+    this.elasticMotion = motion;
+    this.style.setProperty("--sf-effect-x", `${motion.x.toFixed(3)}px`);
+    this.style.setProperty("--sf-effect-y", `${motion.y.toFixed(3)}px`);
+    this.style.setProperty("--sf-effect-rotate", `${motion.rotate.toFixed(3)}deg`);
+    this.style.setProperty("--sf-effect-scale-x", motion.scaleX.toFixed(4));
+    this.style.setProperty("--sf-effect-scale-y", motion.scaleY.toFixed(4));
+  }
+
+  setElastic(motion) {
+    this.classList.add("is-effect-active");
+    this.applyElasticMotion(motion);
+    this.publishProgress(motion.amount, DragEffect.ELASTIC);
+  }
+
+  resetMotionVariables() {
+    this.classList.remove("is-effect-active");
+    this.style.setProperty("--sf-effect-x", "0px");
+    this.style.setProperty("--sf-effect-y", "0px");
+    this.style.setProperty("--sf-effect-rotate", "0deg");
+    this.style.setProperty("--sf-effect-scale-x", "1");
+    this.style.setProperty("--sf-effect-scale-y", "1");
+    this.elasticMotion = createElasticTransform(0, 0, 1);
+  }
+
+  resetTransientEffect() {
+    this.dissolve = 0;
+    this.effectProgress = 0;
+    this.style.webkitMaskImage = "none";
+    this.style.maskImage = "none";
+    this.style.setProperty("--sf-fade", "1");
+    this.resetMotionVariables();
   }
 
   cancelRestore() {
@@ -415,6 +656,78 @@ export class ShaderFont extends HTMLElement {
     }
   }
 
+  completeMotionRestore(token, effect) {
+    if (token !== this.restoreToken || this.gesture.tag !== GestureTag.RESTORING || this.gesture.token !== token) return;
+    if (this.restoreTimer !== 0) {
+      clearTimeout(this.restoreTimer);
+      this.restoreTimer = 0;
+    }
+    this.resetMotionVariables();
+    this.publishProgress(0, effect);
+    this.transitionTo(idleGesture());
+  }
+
+  restoreShake() {
+    const initial = this.effectProgress;
+    this.cancelRestore();
+    const token = this.restoreToken;
+    this.classList.remove("is-effect-active");
+    if (initial <= 0.001) {
+      this.resetMotionVariables();
+      this.publishProgress(0, DragEffect.SHAKE);
+      this.transitionTo(idleGesture());
+      return;
+    }
+    this.transitionTo(restoringGesture(token));
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const duration = reduceMotion ? 0 : SHAKE_RESTORE_MS;
+    this.restoreTimer = window.setTimeout(
+      () => this.completeMotionRestore(token, DragEffect.SHAKE),
+      duration
+    );
+  }
+
+  restoreElastic() {
+    const initial = this.elasticMotion;
+    const initialProgress = this.effectProgress;
+    this.cancelRestore();
+    const token = this.restoreToken;
+    if (initialProgress <= 0.001) {
+      this.resetMotionVariables();
+      this.publishProgress(0, DragEffect.ELASTIC);
+      this.transitionTo(idleGesture());
+      return;
+    }
+
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const duration = reduceMotion
+      ? 100
+      : numberAttribute(this, "restore-ms", ELASTIC_RESTORE_MS, 100, 10_000);
+    this.transitionTo(restoringGesture(token));
+    this.restoreTimer = window.setTimeout(
+      () => this.completeMotionRestore(token, DragEffect.ELASTIC),
+      duration + 100
+    );
+    const startedAt = performance.now();
+    const tick = now => {
+      if (token !== this.restoreToken || this.gesture.tag !== GestureTag.RESTORING || this.gesture.token !== token) return;
+      const elapsed = clamp((now - startedAt) / duration, 0, 1);
+      const factor = reduceMotion ? 1 - elapsed : dampedSpringFactor(elapsed);
+      this.applyElasticMotion({
+        x: initial.x * factor,
+        y: initial.y * factor,
+        rotate: initial.rotate * factor,
+        scaleX: 1 + (initial.scaleX - 1) * factor,
+        scaleY: 1 + (initial.scaleY - 1) * factor,
+        amount: initialProgress * (1 - elapsed)
+      });
+      this.publishProgress(initialProgress * (1 - elapsed), DragEffect.ELASTIC);
+      if (elapsed < 1) requestAnimationFrame(tick);
+      else this.completeMotionRestore(token, DragEffect.ELASTIC);
+    };
+    requestAnimationFrame(tick);
+  }
+
   completeRestore(token) {
     if (token !== this.restoreToken || this.gesture.tag !== GestureTag.RESTORING || this.gesture.token !== token) return;
     if (this.restoreTimer !== 0) {
@@ -422,6 +735,7 @@ export class ShaderFont extends HTMLElement {
       this.restoreTimer = 0;
     }
     this.setDissolve(0);
+    this.clearSelectionRegions();
     this.transitionTo(idleGesture());
   }
 
@@ -432,6 +746,7 @@ export class ShaderFont extends HTMLElement {
     if (initial <= 0.001) {
       this.transitionTo(idleGesture());
       this.setDissolve(0);
+      this.clearSelectionRegions();
       return;
     }
 
@@ -459,18 +774,20 @@ export class ShaderFont extends HTMLElement {
 
   resetPosition() {
     this.cancelRestore();
-    this.cancelQueuedDissolve();
+    this.stopDissolveClock();
     const state = this.gesture;
     if ((state.tag === GestureTag.PRESSED || state.tag === GestureTag.ACTIVE) && this.hasPointerCapture(state.pointerId)) {
       this.releasePointerCapture(state.pointerId);
     }
-    this.classList.remove("is-dragging");
+    this.classList.remove("is-dragging", "is-effect-active");
     this.transitionTo(idleGesture());
     this.offsetX = 0;
     this.offsetY = 0;
     this.style.setProperty("--sf-x", "0px");
     this.style.setProperty("--sf-y", "0px");
-    this.setDissolve(0);
+    this.resetTransientEffect();
+    this.publishProgress(0, this.dragEffect());
+    this.clearSelectionRegions();
   }
 }
 

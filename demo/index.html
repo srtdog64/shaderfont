@@ -65,13 +65,18 @@
     }
     .legacy { margin-top: 30px; padding-top: 24px; border-top: 1px solid #15303b; }
     .legacy shader-font { font-size: 28px; font-weight: 750; }
+    .usage { margin-top: 30px; }
+    .usage h2 { color: #e9fbff; font-size: 20px; }
+    .usage p { color: #7f9ba6; line-height: 1.65; }
+    .usage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .usage-grid pre { margin: 0; min-height: 100%; }
   </style>
 </head>
 <body>
   <main>
     <div class="eyebrow">DOM typography / sentence-aware dissolve</div>
     <h1>Shaderfont</h1>
-    <p class="intro">보통 글처럼 선택하고 편집할 수 있지만, 드래그하는 동안 문장의 읽기 순서를 따라 사라집니다. 놓으면 같은 순서의 반대로 복구됩니다.</p>
+    <p class="intro">실제 DOM 글자를 그대로 편집하면서 디졸브, 이동, 떨림, 고무줄 탄성을 골라 드래그할 수 있습니다. 디졸브의 위치는 선택한 글자, 진행량은 드래그를 유지한 시간이 정합니다.</p>
 
     <section class="stage">
       <shader-font
@@ -79,21 +84,28 @@
         block
         contenteditable="true"
         interaction="select"
+        drag-effect="dissolve"
         flow="reading"
         roughness="0.26"
         primary="#69efff"
         secondary="#ff946a"
         accent="#fff4bd">이 문장은 실제 DOM 텍스트입니다. 직접 고쳐 쓰거나 문장을 드래그해 보세요.</shader-font>
-      <div class="hint">문장을 선택하듯 드래그 · 현재 상태 <span class="status" id="status">idle / 0%</span></div>
+      <div class="hint"><span id="gesture-hint">글자를 선택하듯 드래그</span> · 현재 상태 <span class="status" id="status">idle / dissolve / 0%</span></div>
     </section>
 
     <section class="controls" aria-label="Shaderfont controls">
       <label>주 색상 <input id="primary" type="color" value="#69efff"></label>
       <label>보조 색상 <input id="secondary" type="color" value="#ff946a"></label>
       <label>강조 색상 <input id="accent" type="color" value="#fff4bd"></label>
+      <label>글자 셰이더
+        <select id="shader">
+          <option value="hologram">홀로그램</option>
+          <option value="none">없음 (일반 글자)</option>
+        </select>
+      </label>
       <label>디졸브 흐름
         <select id="flow">
-          <option value="reading">문장 읽기 순서</option>
+          <option value="reading">선택 영역 (기본)</option>
           <option value="rtl">오른쪽에서 왼쪽</option>
           <option value="random">무작위 비교용</option>
         </select>
@@ -101,11 +113,16 @@
       <label>침식 질감
         <input id="roughness" type="range" min="0" max="0.48" step="0.01" value="0.26">
       </label>
-      <label>드래그 동작
-        <select id="interaction">
-          <option value="select">텍스트 선택</option>
-          <option value="move">글자 이동</option>
-          <option value="none">끄기</option>
+      <label>디졸브 시간(ms)
+        <input id="dissolve-ms" type="number" min="200" max="10000" step="100" value="1800">
+      </label>
+      <label>드래그 효과
+        <select id="drag-effect">
+          <option value="none">없음 (기본 선택·편집)</option>
+          <option value="dissolve" selected>디졸브</option>
+          <option value="move">이동</option>
+          <option value="shake">춤추기·떨림</option>
+          <option value="elastic">고무줄 탄성</option>
         </select>
       </label>
       <button id="reset" type="button">위치·효과 초기화</button>
@@ -113,9 +130,32 @@
 
     <pre><code>&lt;script type="module" src="/src/shader-font.js"&gt;&lt;/script&gt;
 
-&lt;shader-font primary="#69efff" secondary="#ff946a"&gt;
+&lt;shader-font
+  shader="hologram"
+  drag-effect="dissolve"
+  primary="#69efff"
+  secondary="#ff946a"
+  accent="#fff4bd"
+  roughness="0.26"
+  dissolve-ms="1800"
+  restore-ms="1800"&gt;
   안녕하세요
 &lt;/shader-font&gt;</code></pre>
+
+    <section class="usage">
+      <h2>실제로 쓸 때</h2>
+      <p><code>shader</code>와 <code>drag-effect</code>는 서로 독립적입니다. 둘 중 하나만 끄거나, 둘 다 끌 수 있습니다.</p>
+      <div class="usage-grid">
+        <pre><code>&lt;!-- 일반 글자 + 브라우저 기본 선택 --&gt;
+&lt;shader-font shader="none" drag-effect="none"&gt;
+  평범한 본문
+&lt;/shader-font&gt;</code></pre>
+        <pre><code>&lt;!-- 홀로그램 + 고무줄 드래그 --&gt;
+&lt;shader-font shader="hologram" drag-effect="elastic"&gt;
+  잡아당겨 보세요
+&lt;/shader-font&gt;</code></pre>
+      </div>
+    </section>
 
     <section class="legacy">
       <p>요청한 하이픈 없는 별칭도 자동으로 표준 요소로 바뀝니다.</p>
@@ -125,15 +165,27 @@
   <script type="module">
     const sentence = document.querySelector("#sentence");
     const status = document.querySelector("#status");
-    for (const name of ["primary", "secondary", "accent", "flow", "roughness", "interaction"]) {
+    const gestureHint = document.querySelector("#gesture-hint");
+    const hints = {
+      none: "브라우저 기본 선택·편집",
+      dissolve: "글자를 선택하듯 드래그",
+      move: "문장을 잡아 원하는 자리로 이동",
+      shake: "문장을 잡아 흔들기",
+      elastic: "문장을 당겼다가 놓기"
+    };
+    for (const name of ["shader", "primary", "secondary", "accent", "flow", "roughness", "dissolve-ms", "drag-effect"]) {
       document.querySelector(`#${name}`).addEventListener("input", event => sentence.setAttribute(name, event.target.value));
     }
+    document.querySelector("#drag-effect").addEventListener("input", event => {
+      gestureHint.textContent = hints[event.target.value];
+      status.textContent = `idle / ${event.target.value} / 0%`;
+    });
     document.querySelector("#reset").addEventListener("click", () => sentence.resetPosition());
     sentence.addEventListener("shaderfont-state", event => {
-      status.textContent = `${event.detail.state} / ${Math.round(sentence.dissolve * 100)}%`;
+      status.textContent = `${event.detail.state} / ${event.detail.effect} / ${Math.round(sentence.effectProgress * 100)}%`;
     });
     sentence.addEventListener("shaderfont-progress", event => {
-      status.textContent = `${event.detail.state} / ${Math.round(event.detail.dissolve * 100)}%`;
+      status.textContent = `${event.detail.state} / ${event.detail.effect} / ${Math.round(event.detail.progress * 100)}%`;
     });
   </script>
 </body>
