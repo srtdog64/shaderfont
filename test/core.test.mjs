@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   activeGesture,
   assertGestureTransition,
+  createErosionField,
   createMaskAlpha,
   hashText,
   idleGesture,
@@ -48,12 +49,53 @@ test("reading dissolve advances across the sentence instead of punching random h
   assert.ok(rtlRight + 120 < rtlLeft, `${rtlRight} should be much lower than ${rtlLeft}`);
 });
 
+test("the moving frontier contains a textured erosion field", () => {
+  const width = 240;
+  const height = 48;
+  const alpha = createMaskAlpha(width, height, {
+    progress: 0.5,
+    lineHeight: height,
+    roughness: 0.26,
+    seed: 27
+  });
+  const frontier = [];
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 92; x < 148; x += 1) frontier.push(alpha[y * width + x]);
+  }
+  const burned = frontier.filter(value => value < 32).length;
+  const intact = frontier.filter(value => value > 223).length;
+  assert.ok(burned > frontier.length * 0.12, `expected burned islands, received ${burned}`);
+  assert.ok(intact > frontier.length * 0.12, `expected intact islands, received ${intact}`);
+});
+
+test("erosion is monotonic for every pixel", () => {
+  const earlier = createMaskAlpha(96, 32, { progress: 0.35, lineHeight: 32, seed: 81 });
+  const later = createMaskAlpha(96, 32, { progress: 0.65, lineHeight: 32, seed: 81 });
+  for (let index = 0; index < earlier.length; index += 1) {
+    assert.ok(later[index] <= earlier[index], `pixel ${index} became more visible`);
+  }
+});
+
 test("mask generation is stable for the same sentence", () => {
   const options = { progress: 0.43, lineHeight: 18, seed: hashText("안녕하세요") };
   assert.deepEqual(createMaskAlpha(64, 32, options), createMaskAlpha(64, 32, options));
   assert.notDeepEqual(
     createMaskAlpha(64, 32, options),
     createMaskAlpha(64, 32, { ...options, seed: hashText("다른 문장") })
+  );
+});
+
+test("a cached erosion field produces the same mask", () => {
+  const seed = hashText("cached texture");
+  const texture = createErosionField(80, 24, { seed });
+  const options = { progress: 0.47, lineHeight: 24, seed };
+  assert.deepEqual(
+    createMaskAlpha(80, 24, options),
+    createMaskAlpha(80, 24, { ...options, texture })
+  );
+  assert.throws(
+    () => createMaskAlpha(80, 24, { ...options, texture: new Float32Array(10) }),
+    /do not match/
   );
 });
 

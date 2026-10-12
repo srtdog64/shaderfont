@@ -80,6 +80,7 @@
         contenteditable="true"
         interaction="select"
         flow="reading"
+        roughness="0.26"
         primary="#69efff"
         secondary="#ff946a"
         accent="#fff4bd">이 문장은 실제 DOM 텍스트입니다. 직접 고쳐 쓰거나 문장을 드래그해 보세요.</shader-font>
@@ -96,6 +97,9 @@
           <option value="rtl">오른쪽에서 왼쪽</option>
           <option value="random">무작위 비교용</option>
         </select>
+      </label>
+      <label>침식 질감
+        <input id="roughness" type="range" min="0" max="0.48" step="0.01" value="0.26">
       </label>
       <label>드래그 동작
         <select id="interaction">
@@ -121,7 +125,7 @@
   <script type="module">
     const sentence = document.querySelector("#sentence");
     const status = document.querySelector("#status");
-    for (const name of ["primary", "secondary", "accent", "flow", "interaction"]) {
+    for (const name of ["primary", "secondary", "accent", "flow", "roughness", "interaction"]) {
       document.querySelector(`#${name}`).addEventListener("input", event => sentence.setAttribute(name, event.target.value));
     }
     document.querySelector("#reset").addEventListener("click", () => sentence.resetPosition());

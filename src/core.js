@@ -82,6 +82,40 @@ function valueNoise(x, y, scale, seed) {
   return top + (bottom - top) * fy;
 }
 
+function erosionNoise(x, y, baseScale, seed) {
+  const warpScale = baseScale * 1.7;
+  const warpX = (valueNoise(x + 43, y - 19, warpScale, seed ^ 0x27d4eb2d) - 0.5) * baseScale * 1.15;
+  const warpY = (valueNoise(x - 67, y + 31, warpScale, seed ^ 0x165667b1) - 0.5) * baseScale * 1.15;
+  const warpedX = x + warpX;
+  const warpedY = y + warpY;
+  const coarse = valueNoise(warpedX, warpedY, baseScale, seed);
+  const medium = valueNoise(warpedX + 131, warpedY - 79, Math.max(4, baseScale * 0.43), seed ^ 0x5bd1e995);
+  const fine = valueNoise(warpedX - 211, warpedY + 157, Math.max(2, baseScale * 0.18), seed ^ 0x85ebca6b);
+  return clamp(coarse * 0.54 + medium * 0.31 + fine * 0.15, 0, 1);
+}
+
+function validateMaskDimensions(width, height) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+    throw new RangeError("Mask dimensions must be positive integers");
+  }
+  if (width * height > 4_194_304) {
+    throw new RangeError("Mask dimensions exceed the 4-megapixel safety limit");
+  }
+}
+
+export function createErosionField(width, height, options = {}) {
+  validateMaskDimensions(width, height);
+  const seed = Number(options.seed ?? 0) | 0;
+  const baseScale = Math.max(10, Math.min(width, height) * 0.26);
+  const texture = new Float32Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      texture[y * width + x] = erosionNoise(x, y, baseScale, seed);
+    }
+  }
+  return texture;
+}
+
 export function hashText(text) {
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index += 1) {
@@ -107,12 +141,7 @@ function alphaAt(signal, progress, feather) {
 }
 
 export function createMaskAlpha(width, height, options = {}) {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
-    throw new RangeError("Mask dimensions must be positive integers");
-  }
-  if (width * height > 4_194_304) {
-    throw new RangeError("Mask dimensions exceed the 4-megapixel safety limit");
-  }
+  validateMaskDimensions(width, height);
 
   const progress = clamp(Number(options.progress ?? 0), 0, 1);
   const alpha = new Uint8ClampedArray(width * height);
@@ -125,22 +154,29 @@ export function createMaskAlpha(width, height, options = {}) {
   const flow = options.flow ?? "reading";
   const direction = options.direction === "rtl" || flow === "rtl" ? "rtl" : "ltr";
   const lineHeight = clamp(Number(options.lineHeight ?? height), 1, height);
-  const roughness = clamp(Number(options.roughness ?? 0.18), 0, 0.48);
+  const roughness = clamp(Number(options.roughness ?? 0.26), 0, 0.48);
   const seed = Number(options.seed ?? 0) | 0;
-  const coarseScale = Math.max(8, Math.min(width, height) * 0.16);
-  const fineScale = Math.max(3, coarseScale * 0.36);
-  const feather = 0.018 + roughness * 0.12;
+  const texture = options.texture ?? createErosionField(width, height, { seed });
+  if (texture.length !== width * height) {
+    throw new RangeError("Erosion texture dimensions do not match the mask");
+  }
+  const erosionBand = clamp(0.34 + roughness * 1.35, 0.34, 0.98);
+  const feather = 0.035;
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const coarse = valueNoise(x, y, coarseScale, seed);
-      const fine = valueNoise(x + 131, y - 79, fineScale, seed ^ 0x5bd1e995);
-      const noise = coarse * 0.72 + fine * 0.28;
+      const erosion = texture[y * width + x];
       const reading = readingCoordinate(x, y, width, height, lineHeight, direction);
-      const signal = flow === "random"
-        ? noise
-        : reading + (noise - 0.5) * roughness;
-      alpha[y * width + x] = alphaAt(signal, progress, feather);
+      const localProgress = flow === "random"
+        ? progress
+        : clamp((progress * (1 + erosionBand) - reading) / erosionBand, 0, 1);
+      if (localProgress <= 0) {
+        alpha[y * width + x] = 255;
+      } else if (localProgress >= 1) {
+        alpha[y * width + x] = 0;
+      } else {
+        alpha[y * width + x] = alphaAt(erosion, localProgress, feather);
+      }
     }
   }
   return alpha;

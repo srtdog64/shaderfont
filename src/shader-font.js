@@ -3,6 +3,7 @@ import {
   activeGesture,
   assertGestureTransition,
   clamp,
+  createErosionField,
   createMaskAlpha,
   hashText,
   idleGesture,
@@ -11,7 +12,7 @@ import {
 } from "./core.js";
 
 const STYLE_ID = "shader-font-component-styles";
-const MASK_STEPS = 48;
+const MASK_STEPS = 24;
 const MASK_CACHE_LIMIT = 12;
 const DRAG_THRESHOLD = 5;
 const DEFAULT_RESTORE_MS = 1800;
@@ -167,7 +168,10 @@ export class ShaderFont extends HTMLElement {
     this.dissolve = 0;
     this.restoreToken = 0;
     this.restoreTimer = 0;
+    this.maskFrame = 0;
+    this.pendingDissolve = null;
     this.maskCache = new Map();
+    this.textureCache = new Map();
     this.resizeObserver = new ResizeObserver(() => this.invalidateMask());
     this.textObserver = new MutationObserver(() => this.invalidateMask());
     this.onPointerDown = this.onPointerDown.bind(this);
@@ -193,6 +197,7 @@ export class ShaderFont extends HTMLElement {
 
   disconnectedCallback() {
     this.cancelRestore();
+    this.cancelQueuedDissolve();
     this.removeEventListener("pointerdown", this.onPointerDown);
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerEnd);
@@ -280,7 +285,7 @@ export class ShaderFont extends HTMLElement {
     const selected = state.mode === "select" ? selectionFraction(this) : 0;
     const travelled = clamp(distance / (width * 0.82), 0, 1);
     const progress = clamp(Math.max(selected, travelled) * 0.98, 0.06, 0.98);
-    this.setDissolve(progress);
+    this.queueDissolve(progress);
   }
 
   onPointerEnd(event) {
@@ -288,6 +293,7 @@ export class ShaderFont extends HTMLElement {
     if ((state.tag !== GestureTag.PRESSED && state.tag !== GestureTag.ACTIVE) || event.pointerId !== state.pointerId) return;
     this.classList.remove("is-dragging");
     if (this.hasPointerCapture(event.pointerId)) this.releasePointerCapture(event.pointerId);
+    this.flushQueuedDissolve();
     this.restoreDissolve();
   }
 
@@ -296,18 +302,47 @@ export class ShaderFont extends HTMLElement {
     if (state.tag !== GestureTag.PRESSED && state.tag !== GestureTag.ACTIVE) return;
     this.classList.remove("is-dragging");
     if (this.hasPointerCapture(state.pointerId)) this.releasePointerCapture(state.pointerId);
+    this.flushQueuedDissolve();
     this.restoreDissolve();
+  }
+
+  queueDissolve(progress) {
+    this.pendingDissolve = clamp(progress, 0, 1);
+    if (this.maskFrame !== 0) return;
+    this.maskFrame = requestAnimationFrame(() => {
+      this.maskFrame = 0;
+      const pending = this.pendingDissolve;
+      this.pendingDissolve = null;
+      if (pending !== null) this.setDissolve(pending);
+    });
+  }
+
+  flushQueuedDissolve() {
+    if (this.maskFrame !== 0) {
+      cancelAnimationFrame(this.maskFrame);
+      this.maskFrame = 0;
+    }
+    const pending = this.pendingDissolve;
+    this.pendingDissolve = null;
+    if (pending !== null) this.setDissolve(pending);
+  }
+
+  cancelQueuedDissolve() {
+    if (this.maskFrame !== 0) cancelAnimationFrame(this.maskFrame);
+    this.maskFrame = 0;
+    this.pendingDissolve = null;
   }
 
   invalidateMask() {
     this.maskCache.clear();
+    this.textureCache.clear();
     if (this.dissolve > 0) this.setDissolve(this.dissolve);
   }
 
   maskForProgress(progress) {
     if (progress <= 0.001) return "";
     const rect = this.getBoundingClientRect();
-    const scale = Math.min(1, 640 / Math.max(1, rect.width), 320 / Math.max(1, rect.height));
+    const scale = Math.min(1, 320 / Math.max(1, rect.width), 160 / Math.max(1, rect.height));
     const width = Math.max(1, Math.round(rect.width * scale));
     const height = Math.max(1, Math.round(rect.height * scale));
     const computed = getComputedStyle(this);
@@ -320,7 +355,7 @@ export class ShaderFont extends HTMLElement {
       : flow === "ltr"
         ? "ltr"
         : computed.direction === "rtl" ? "rtl" : "ltr";
-    const roughness = numberAttribute(this, "roughness", 0.18, 0, 0.48);
+    const roughness = numberAttribute(this, "roughness", 0.26, 0, 0.48);
     const step = Math.min(MASK_STEPS, Math.max(1, Math.round(progress * MASK_STEPS)));
     const seed = hashText(this.textContent ?? "");
     const key = [width, height, Math.round(lineHeight), flow, direction, roughness, step, seed].join(":");
@@ -331,13 +366,21 @@ export class ShaderFont extends HTMLElement {
       return cached;
     }
 
+    const textureKey = [width, height, seed].join(":");
+    let texture = this.textureCache.get(textureKey);
+    if (!texture) {
+      texture = createErosionField(width, height, { seed });
+      this.textureCache.clear();
+      this.textureCache.set(textureKey, texture);
+    }
     const alpha = createMaskAlpha(width, height, {
       progress: step / MASK_STEPS,
       flow,
       direction,
       lineHeight,
       roughness,
-      seed
+      seed,
+      texture
     });
     const mask = alphaToMaskUrl(width, height, alpha);
     this.maskCache.set(key, mask);
@@ -416,6 +459,7 @@ export class ShaderFont extends HTMLElement {
 
   resetPosition() {
     this.cancelRestore();
+    this.cancelQueuedDissolve();
     const state = this.gesture;
     if ((state.tag === GestureTag.PRESSED || state.tag === GestureTag.ACTIVE) && this.hasPointerCapture(state.pointerId)) {
       this.releasePointerCapture(state.pointerId);
