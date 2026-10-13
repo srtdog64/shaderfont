@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Shaderfont native selection regression</title>
+<style>
+  body { color: #172033; background: #f8fafc; font: 18px/1.7 system-ui; margin: 28px; }
+  main { max-width: 900px; }
+  h2 { font: bold 38px/1.6 Georgia, serif; margin: 12px 0; }
+  .sample { padding: 12px 20px; border: 1px solid #cbd5e1; margin: 12px 0; }
+  #wrapped { width: 340px; }
+  button { font: inherit; padding: 6px 12px; }
+  pre { white-space: pre-wrap; font: 13px/1.5 monospace; }
+</style>
+<main>
+<h1>어디서 시작해도 선택한 글자만 디졸브</h1>
+<p>제목의 오른쪽 여백에서 왼쪽으로, 문장 가운데에서, 또는 두 제목을 가로질러 드래그해 보세요. 놓아도 선택이 유지되고, 선택을 해제하면 복구됩니다.</p>
+<section class="sample" id="headings">
+  <h2 id="heading"><shader-font id="a" speed="0" restore-ms="900">Surviving the FOMO of</shader-font></h2>
+  <h2><shader-font id="b" speed="0" restore-ms="900">Programming Influencers</shader-font></h2>
+</section>
+<p class="sample" id="sentence"><span id="prefix">일반 글자 앞부분. </span><shader-font id="c" speed="0" restore-ms="900">이 문장의 가운데부터 선택할 수도 있습니다.</shader-font><span id="suffix"> 일반 글자 뒷부분.</span></p>
+<p class="sample" id="wrapped">여러 줄: <shader-font id="w" speed="0" restore-ms="900">앞뒤 일반 글자 사이의 효과 문장이 자연스럽게 줄바꿈되고 선택한 줄 조각만 사라져야 합니다.</shader-font> 끝.</p>
+<p class="sample" contenteditable="true" id="editor"><shader-font id="disabled" shader="none" drag-effect="none">편집 중에는 선택과 타이핑만 합니다.</shader-font></p>
+<button id="run">범위·상태 회귀 검사</button> <button id="clear">선택 해제</button>
+<output id="live" aria-live="polite"></output>
+<pre id="results">Ready</pre>
+</main>
+<script type="module">
+import { registerShaderFont } from "../../src/index.js";
+import { selectionWithin } from "../../src/selection-range.js";
+const registered = await registerShaderFont();
+if (!registered.ok) throw new Error(registered.error);
+const a = document.querySelector("#a"), b = document.querySelector("#b"), c = document.querySelector("#c");
+const w = document.querySelector("#w"), disabled = document.querySelector("#disabled");
+const hosts = [a, b, c, w, disabled];
+const prefix = document.querySelector("#prefix").firstChild, suffix = document.querySelector("#suffix").firstChild;
+const heading = document.querySelector("#heading"), output = document.querySelector("#results");
+const live = document.querySelector("#live"), button = document.querySelector("#run");
+const selection = getSelection();
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(condition, message) {
+  const deadline = performance.now() + 3000;
+  while (!condition() && performance.now() < deadline) await delay(20);
+  check(condition(), message);
+}
+function choose(start, startOffset, end, endOffset, backwards = false) {
+  selection.removeAllRanges();
+  selection.setBaseAndExtent(backwards ? end : start, backwards ? endOffset : startOffset,
+    backwards ? start : end, backwards ? startOffset : endOffset);
+}
+function snapshot() {
+  return [selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset, selection.toString()];
+}
+function unchanged(before) { return snapshot().every((value, index) => value === before[index]); }
+function pointer(type, x = -10) {
+  document.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 71, isPrimary: true, button: 0, clientX: x, clientY: 0 }));
+}
+async function clear() {
+  selection.removeAllRanges(); document.dispatchEvent(new Event("selectionchange"));
+  await until(() => hosts.every(host => host.gesture.tag === "idle" && host.style.maskImage === "none"), "selection did not restore");
+}
+async function alpha(host) {
+  const image = new Image();
+  image.src = host.dissolveMaskImage.slice(5, -2);
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
+  const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  return Uint8Array.from({ length: rgba.length / 4 }, (_, i) => rgba[i * 4 + 3]);
+}
+document.addEventListener("shaderfont-progress", () => {
+  live.textContent = hosts.map(host => `${host.id}: ${host.gesture.tag} ${Math.round(host.dissolve * 100)}%`).join(" · ");
+});
+document.querySelector("#clear").addEventListener("click", clear);
+button.addEventListener("click", async () => {
+  button.disabled = true;
+  const results = [];
+  async function run(name, body) {
+    try { await clear(); results.push({ name, status: "pass", ...await body() }); }
+    catch (error) { results.push({ name, status: "fail", error: error.message }); }
+    output.textContent = JSON.stringify({ status: "running", results }, null, 2);
+  }
+  for (const host of hosts) host.setAttribute("dissolve-ms", "200");
+  const rangeCases = [
+    ["inside middle", () => choose(a.firstChild, 10, a.firstChild, 18), a, a.textContent.slice(10, 18)],
+    ["parent endpoints", () => choose(heading, 0, heading, heading.childNodes.length), a, a.textContent],
+    ["outside prefix to partial", () => choose(prefix, 3, c.firstChild, 8), c, c.textContent.slice(0, 8)],
+    ["inside to outside suffix", () => choose(c.firstChild, 9, suffix, 4), c, c.textContent.slice(9)],
+    ["both endpoints outside", () => choose(prefix, 3, suffix, 4), c, c.textContent],
+    ["backwards range", () => choose(prefix, 3, c.firstChild, 8, true), c, c.textContent.slice(0, 8)],
+    ["cross fonts first part", () => choose(a.firstChild, 10, b.firstChild, 11), a, a.textContent.slice(10)],
+    ["cross fonts second part", () => choose(a.firstChild, 10, b.firstChild, 11), b, b.textContent.slice(0, 11)],
+    ["foreign range", () => choose(prefix, 0, prefix, 4), a, null],
+    ["collapsed range", () => choose(a.firstChild, 4, a.firstChild, 4), a, null],
+    ["touching start only", () => choose(prefix, 0, c.firstChild, 0), c, null],
+    ["touching end only", () => choose(c.firstChild, c.textContent.length, suffix, 4), c, null]
+  ];
+  for (const [name, select, host, expected] of rangeCases) await run(`Range: ${name}`, () => {
+    select(); const before = snapshot(), local = selectionWithin(host, document);
+    check((local?.range.toString() ?? null) === expected, "intersection text mismatch");
+    check(unchanged(before), "local clipping mutated browser selection");
+    return { text: expected };
+  });
+  for (const renderer of ["canvas2d", "webgl"]) {
+    for (const host of [a, b, c, w]) host.setAttribute("renderer", renderer);
+    const cases = [
+      ["parent-bound reverse", () => choose(a.firstChild, 10, heading, heading.childNodes.length, true), [a]],
+      ["outside to middle", () => choose(prefix, 3, c.firstChild, 8), [c]],
+      ["cross-font backwards", () => choose(a.firstChild, 10, b.firstChild, 11, true), [a, b]],
+      ["wrapped partial", () => choose(w.firstChild, 10, w.firstChild, 35), [w]]
+    ];
+    for (const [name, select, affected] of cases) await run(`${renderer}: ${name}`, async () => {
+      pointer("pointerdown"); select(); const before = snapshot(); pointer("pointermove", 50);
+      document.dispatchEvent(new Event("selectionchange")); pointer("pointerup", 50);
+      await until(() => affected.every(host => host.gesture.tag === "selected" && host.dissolve === 1), "dissolve did not finish and retain selection");
+      check(unchanged(before), "gesture changed native selection");
+      let outside = 0, erased = 0;
+      for (const host of affected) {
+        check(host.maskSurface.kind === renderer, "wrong renderer");
+        const pixels = await alpha(host), field = host.maskField;
+        for (let i = 0; i < pixels.length; i++) {
+          const selected = Number.isFinite(field.thresholds[i]);
+          check(pixels[i] === (selected ? 0 : 255), "selected or unselected alpha is wrong");
+          selected ? erased++ : outside++;
+        }
+      }
+      check(erased > 0 && outside > 0, "partial selection did not keep outside pixels");
+      await clear();
+      return { erased, outside, restored: true };
+    });
+  }
+  await run("no active drag: keyboard and unrelated selection stay idle", async () => {
+    choose(a.firstChild, 4, a.firstChild, 11); document.dispatchEvent(new Event("selectionchange")); await delay(60);
+    check(a.gesture.tag === "idle", "keyboard-only selection armed dissolve");
+    pointer("pointerdown"); choose(prefix, 0, prefix, 5); pointer("pointermove", 50); pointer("pointerup", 50);
+    check(hosts.every(host => host.gesture.tag === "idle"), "foreign selection armed dissolve");
+  });
+  await run("editing drag-effect none keeps native selection", async () => {
+    pointer("pointerdown"); choose(disabled.firstChild, 1, disabled.firstChild, 10); const before = snapshot();
+    pointer("pointermove", 50); document.dispatchEvent(new Event("selectionchange")); pointer("pointerup", 50); await delay(60);
+    check(disabled.gesture.tag === "idle" && disabled.style.maskImage === "none", "editing armed dissolve");
+    check(unchanged(before), "editing changed native selection");
+  });
+  await clear();
+  for (const host of hosts) { host.setAttribute("dissolve-ms", "2400"); host.setAttribute("renderer", "canvas2d"); }
+  output.textContent = JSON.stringify({ status: results.every(result => result.status === "pass") ? "pass" : "fail", results }, null, 2);
+  button.disabled = false;
+});
+</script>
+</html>

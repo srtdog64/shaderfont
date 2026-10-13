@@ -79,6 +79,7 @@ globalThis.window = Object.assign(new EventTarget(), {
 });
 globalThis.document = Object.assign(new EventTarget(), {
   hidden: false,
+  defaultView: window,
   getSelection: () => selection,
   getElementById: () => ({}),
   querySelectorAll: () => [],
@@ -117,17 +118,43 @@ function host() {
 }
 function select(element) {
   const node = { owner: element };
+  const range = { startContainer: node, startOffset: 0, endContainer: node, endOffset: 5,
+    intersectsNode: candidate => candidate === element,
+    getClientRects() { rangeReads += 1; return [{ left: 20, top: 0, right: 120, bottom: 32 }]; }
+  };
   selection = {
     rangeCount: 1, isCollapsed: false, anchorNode: node, focusNode: node,
-    getRangeAt: () => ({ getClientRects() {
-      rangeReads += 1;
-      return [{ left: 20, top: 0, right: 120, bottom: 32 }];
-    } }),
+    getRangeAt: () => range,
     removeAllRanges() { selection = null; }
   };
 }
 function pointer(type, x = 10, id = 1) {
   return { type, pointerId: id, clientX: x, clientY: 10, pointerType: "mouse", button: 0, preventDefault() {} };
+}
+function documentPointer(type, x = 10, id = 1) {
+  const event = Object.assign(new Event(type), { pointerId: id, clientX: x, clientY: 10, button: 0, isPrimary: true });
+  document.dispatchEvent(event);
+  window.dispatchEvent(event);
+}
+function selectAcross(first, second) {
+  const start = { owner: first }, end = { owner: second };
+  const range = {
+    startContainer: start, startOffset: 0, endContainer: end, endOffset: 5,
+    intersectsNode: element => element === first || element === second,
+    cloneRange() {
+      let owner;
+      return {
+        collapsed: false,
+        selectNodeContents(element) { owner = element; },
+        setStart() {}, setEnd() {},
+        toString: () => owner.textContent,
+        getClientRects: () => [{ left: 20, top: 0, right: 120, bottom: 32 }]
+      };
+    },
+    compareBoundaryPoints: () => 0
+  };
+  selection = { rangeCount: 1, isCollapsed: false, anchorNode: start, focusNode: end,
+    getRangeAt: () => range, removeAllRanges() { selection = null; } };
 }
 function advance(milliseconds) {
   now += milliseconds;
@@ -486,6 +513,94 @@ test("missing or foreign selection never starts a whole-element dissolve", () =>
   assert.equal(element.gesture.tag, "idle");
   assert.equal(element.style.maskImage, "none");
   assert.equal(canvases, 0);
+});
+
+test("a drag starting outside the font adopts its native selection and survives pointer release", () => {
+  const element = host();
+  documentPointer("pointerdown", -20);
+  select(element);
+  const nativeSelection = selection;
+  documentPointer("pointermove", 90);
+  document.dispatchEvent(new Event("selectionchange"));
+  assert.equal(element.gesture.tag, "active");
+  advance(16); advance(600);
+  assert.equal(element.dissolve, 0.25);
+  documentPointer("pointerup", 90);
+  assert.equal(element.gesture.tag, "selected");
+  advance(1800);
+  assert.equal(element.dissolve, 1);
+  assert.equal(selection, nativeSelection);
+  assert.equal(frames.size, 0);
+  selection = null;
+  document.dispatchEvent(new Event("selectionchange"));
+  assert.equal(element.gesture.tag, "restoring");
+  advance(1800);
+  assert.equal(element.gesture.tag, "idle");
+  assert.equal(element.style.maskImage, "none");
+});
+
+test("pointerup adopts a changed Range even when selectionchange has not arrived yet", () => {
+  const element = host(), states = [];
+  element.addEventListener("shaderfont-state", event => states.push(event.detail.state));
+  documentPointer("pointerdown", -20); documentPointer("pointermove", 90);
+  select(element);
+  documentPointer("pointerup", 90);
+  assert.deepEqual(states, ["pressed", "active", "selected"], "external selection must still follow the gesture ADT");
+  advance(16); advance(1200);
+  assert.equal(element.dissolve, 0.5);
+});
+
+test("cross-font selection applies to each intersected font without taking ownership of the global Range", () => {
+  const first = host(), second = host();
+  documentPointer("pointerdown", -20); selectAcross(first, second); documentPointer("pointermove", 90);
+  const nativeSelection = selection;
+  document.dispatchEvent(new Event("selectionchange"));
+  advance(16); advance(600);
+  documentPointer("pointerup", 90);
+  assert.equal(first.gesture.tag, "selected");
+  assert.equal(second.gesture.tag, "selected");
+  assert.equal(first.dissolve, 0.25);
+  assert.equal(second.dissolve, 0.25);
+  first.setAttribute("drag-effect", "none");
+  assert.equal(selection, nativeSelection, "switching one font must not discard selection in other fonts");
+  first.disconnectedCallback();
+  assert.equal(selection, nativeSelection);
+  advance(1800);
+  assert.equal(second.dissolve, 1);
+});
+
+test("keyboard selection, unrelated ranges and disabled editing do not arm external dissolve", () => {
+  const element = host(), foreign = host();
+  foreign.setAttribute("drag-effect", "none");
+  select(element); document.dispatchEvent(new Event("selectionchange"));
+  assert.equal(element.gesture.tag, "idle");
+  selection = null;
+  documentPointer("pointerdown", -20); select(foreign); documentPointer("pointermove", 90);
+  document.dispatchEvent(new Event("selectionchange")); documentPointer("pointerup", 90);
+  assert.equal(element.gesture.tag, "idle");
+  assert.equal(foreign.gesture.tag, "idle");
+  assert.equal(frames.size, 0);
+  assert.equal(canvases, 0);
+});
+
+test("a new outside drag restarts elapsed dissolve time rather than instantly erasing a new Range", () => {
+  const element = host();
+  begin(element); element.onPointerEnd(pointer("pointerup", 70)); advance(2600);
+  assert.equal(element.dissolve, 1);
+  documentPointer("pointerdown", -20); select(element); documentPointer("pointermove", 90);
+  document.dispatchEvent(new Event("selectionchange"));
+  assert.equal(element.dissolve, 0);
+  advance(16); advance(600); documentPointer("pointerup", 90);
+  assert.equal(element.dissolve, 0.25);
+  assert.equal(element.gesture.tag, "selected");
+});
+
+test("Shift pointer selection retains the native anchor", () => {
+  const element = host();
+  select(element);
+  const nativeSelection = selection;
+  element.onPointerDown({ ...pointer("pointerdown"), shiftKey: true });
+  assert.equal(selection, nativeSelection);
 });
 
 test("disconnect cancels animation and reconnect accepts a new gesture", () => {

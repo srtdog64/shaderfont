@@ -28,6 +28,8 @@ import { createRevealField, revealSample } from "./reveal-core.js";
 import { createRevealRenderer } from "./reveal-renderer.js";
 import { createPaintLayout, projectSelectionRects } from "./paint-layout.js";
 import { createSelectionIndicator } from "./selection-indicator.js";
+import { selectionWithin } from "./selection-range.js";
+import { observeSelectionDrag } from "./selection-gesture.js";
 
 const STYLE_ID = "shader-font-component-styles";
 const MASK_STEPS = 144;
@@ -252,11 +254,7 @@ function numberAttribute(element, name, fallback, minimum, maximum) {
 }
 
 function ownedSelection(element) {
-  const selection = document.getSelection();
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
-  if (!selection.anchorNode || !selection.focusNode) return null;
-  if (!element.contains(selection.anchorNode) || !element.contains(selection.focusNode)) return null;
-  return { selection, range: selection.getRangeAt(0) };
+  return selectionWithin(element, document);
 }
 
 function selectionGeometry(element) {
@@ -365,6 +363,7 @@ export class ShaderFont extends HTMLElement {
     this.onDragStart = this.onDragStart.bind(this);
     this.onSelectionChange = this.onSelectionChange.bind(this);
     this.onWindowBlur = this.onWindowBlur.bind(this);
+    this.selectionDrag = null;
   }
 
   connectedCallback() {
@@ -379,6 +378,7 @@ export class ShaderFont extends HTMLElement {
     window.addEventListener("pointerup", this.onPointerEnd);
     window.addEventListener("pointercancel", this.onPointerEnd);
     document.addEventListener("selectionchange", this.onSelectionChange);
+    this.selectionDrag = observeSelectionDrag(document, pointer => this.adoptSelectionDrag(pointer, true));
     window.addEventListener("blur", this.onWindowBlur);
     this.resizeObserver.observe(this);
     // Non-replaced inline boxes do not emit useful ResizeObserver sizes.
@@ -392,6 +392,8 @@ export class ShaderFont extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this.selectionDrag?.dispose();
+    this.selectionDrag = null;
     this.stopRevealClock(true);
     this.clearRevealPaint();
     this.revealField = null;
@@ -755,7 +757,9 @@ export class ShaderFont extends HTMLElement {
     this.clearSelectionRegions();
     if (this.maskSurface?.kind === "webgl") this.disposeMaskRenderer();
     const owned = ownedSelection(this);
-    if (owned && hadInteraction) owned.selection.removeAllRanges();
+    if (owned && hadInteraction && this.contains(owned.selection.anchorNode) && this.contains(owned.selection.focusNode)) {
+      owned.selection.removeAllRanges();
+    }
     this.transitionTo(idleGesture());
     this.publishProgress(0, this.dragEffect());
   }
@@ -798,7 +802,7 @@ export class ShaderFont extends HTMLElement {
       this.offsetY,
       effect
     ));
-    if (mode === "select") ownedSelection(this)?.selection.removeAllRanges();
+    if (mode === "select" && !event.shiftKey) ownedSelection(this)?.selection.removeAllRanges();
     if (mode === "direct") {
       event.preventDefault();
       this.setPointerCapture(event.pointerId);
@@ -873,6 +877,8 @@ export class ShaderFont extends HTMLElement {
 
   onSelectionChange() {
     if (!ownedSelection(this)) this.selectionIndicator.clear();
+    const pointer = this.selectionDrag?.getDrag();
+    if (pointer) this.adoptSelectionDrag(pointer);
     if (this.gesture.tag === GestureTag.ACTIVE && this.gesture.effect === DragEffect.DISSOLVE) {
       this.selectionDirty = true;
       this.startDissolveClock();
@@ -886,6 +892,21 @@ export class ShaderFont extends HTMLElement {
     }
     this.stopDissolveClock();
     this.restoreDissolve();
+  }
+
+  adoptSelectionDrag(pointer, finished = false) {
+    if (this.interactionMode() !== "select" || this.dragEffect() !== DragEffect.DISSOLVE) return;
+    if (![GestureTag.IDLE, GestureTag.RESTORING, GestureTag.SELECTED].includes(this.gesture.tag)) return;
+    if (!ownedSelection(this)) return;
+    this.cancelRestore();
+    this.stopDissolveClock();
+    this.resetTransientEffect();
+    this.clearSelectionRegions();
+    this.selectionDirty = true;
+    this.transitionTo(pressedGesture("select", pointer.pointerId, pointer.startX, pointer.startY, this.offsetX, this.offsetY, DragEffect.DISSOLVE));
+    this.transitionTo(activeGesture(this.gesture));
+    if (finished) this.transitionTo(selectedGesture(DragEffect.DISSOLVE));
+    this.startDissolveClock();
   }
 
   finishGesture(state, cancelled = false) {
