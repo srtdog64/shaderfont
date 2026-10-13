@@ -1,28 +1,47 @@
 # Shaderfont
 
-일반 웹 텍스트에 홀로그램 같은 재질과 드래그 효과를 붙이는 Web Component입니다. 기존 폰트와 DOM 텍스트를 그대로 써서 선택·복사가 가능하며, 색상과 움직임을 옵션으로 고릅니다.
+[한국어](./README.ko.md)
+
+A Web Component that adds animated materials and drag effects to ordinary DOM text. It uses your existing font and keeps text selectable and copyable. Add `contenteditable="true"` to edit it in place.
+
+## Use it
+
+```sh
+npm install shaderfont
+```
+
+Register it in the browser, then use the element in your HTML:
+
+```js
+import { registerShaderFont } from "shaderfont";
+
+const result = await registerShaderFont();
+if (!result.ok) throw new Error(result.error);
+```
 
 ```html
-<script type="module" src="/src/shader-font.js"></script>
-
 <shader-font shader="hologram" drag-effect="dissolve">
-  안녕하세요
+  Hello
 </shader-font>
 ```
 
-디졸브는 드래그로 선택한 글자만 서서히 지우고, 선택을 해제하면 복구합니다. 이동·떨림·탄성과 불타는 자동 등장도 따로 고를 수 있습니다.
+Choose a `shader` such as `noise`, `plasma`, `aurora`, `cyber`, `flame` or `waves`. Dissolve fades only the selected letters and restores them when you clear the selection. The other drag effects (`move`, `shake`, `elastic`) move the whole element. Set `reveal-effect="burn"` for a timed reveal. Each effect can be turned off with `none`; colors and timing are separate options.
 
-## 동작 원리
+## How it works
 
-브라우저가 글자를 배치하고, CSS의 `background-clip: text`가 움직이는 무늬를 글자 안에만 보여 줍니다. 디졸브는 브라우저의 선택 범위(`Selection/Range`)를 읽어 해당 부분에 노이즈 마스크를 씌우는 방식입니다. 기본 계산은 Canvas 2D이며 `renderer="webgl"`을 고르면 WebGL 2를 사용합니다. 홀로그램과 이동·떨림·탄성은 CSS 효과입니다. 폰트 파일을 만들거나 METAFONT를 실행하지는 않습니다.
+The browser lays out the text. CSS `background-clip: text` clips animated patterns to the letters, while dissolve reads the native `Selection/Range` and masks the selected part with noise. Canvas 2D is the default renderer; `renderer="webgl"` uses WebGL 2 for procedural materials and masks. Hologram and movement effects use CSS. The component does not generate font files or run METAFONT.
 
-## 실행
+The root import is safe for SSR. Call `registerShaderFont()` only in the browser; `shaderfont/browser` registers immediately and is browser-only.
+
+## Try the demo
+
+Clone this repository and run:
 
 ```sh
 npm run demo
 npm run check
 ```
 
-데모는 [127.0.0.1:8766](http://127.0.0.1:8766/)에서 열립니다. SSR에서는 `shaderfont`를 import한 뒤 브라우저에서 `registerShaderFont()`로 등록합니다.
+Open the [English demo](http://127.0.0.1:8766/demo/index.html) or [Korean demo](http://127.0.0.1:8766/demo/index.ko.html). Both have the same controls and editable text.
 
-소스 저장소는 공개입니다. npm에는 아직 배포하지 않았으며, 패키지의 `private: true`와 `UNLICENSED` 설정은 유지합니다.
+[MIT license](./LICENSE).

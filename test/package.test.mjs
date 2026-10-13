@@ -14,10 +14,17 @@ test("Node CJS consumers such as the TypeScript test runner resolve the same opt
   assert.deepEqual(require("shaderfont/options").SHADER_FONT_DEFAULTS, SHADER_FONT_DEFAULTS);
 });
 
-test("private package exports only runtime files and portable options", async () => {
+test("public package includes runtime files, both guides and the MIT license", async () => {
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.equal(manifest.private, true);
-  assert.deepEqual(manifest.files, ["src", "README.md"]);
+  assert.notEqual(manifest.private, true);
+  assert.equal(manifest.license, "MIT");
+  assert.equal(manifest.publishConfig.access, "public");
+  assert.equal(manifest.publishConfig.registry, "https://registry.npmjs.org/");
+  assert.deepEqual(manifest.files, ["src", "README.md", "README.ko.md", "LICENSE"]);
+  assert.equal(manifest.scripts.prepublishOnly, "npm run check");
+  for (const file of ["README.md", "README.ko.md", "LICENSE"]) {
+    assert.ok((await readFile(new URL(`../${file}`, import.meta.url), "utf8")).trim().length > 0);
+  }
   assert.equal(manifest.dependencies, undefined);
   assert.deepEqual(parseShaderFontOptions(), { ok: true, value: SHADER_FONT_DEFAULTS });
   assert.equal(shaderFontAttributes(SHADER_FONT_DEFAULTS)["dissolve-ms"], "2400");

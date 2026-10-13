@@ -11,10 +11,14 @@ const types = new Map([
   [".json", "application/json; charset=utf-8"]
 ]);
 
-createServer((request, response) => {
+const server = createServer((request, response) => {
   try {
     const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
-    const relative = pathname === "/" ? "demo/index.html" : pathname.replace(/^\/+/, "");
+    if (pathname === "/") {
+      response.writeHead(302, { location: "/demo/index.html" }).end();
+      return;
+    }
+    const relative = pathname.replace(/^\/+/, "");
     const candidate = resolve(root, relative);
     if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
       response.writeHead(403).end("Forbidden");
@@ -26,6 +30,8 @@ createServer((request, response) => {
   } catch {
     response.writeHead(404).end("Not found");
   }
-}).listen(port, "127.0.0.1", () => {
-  console.log(`Shaderfont demo: http://127.0.0.1:${port}/`);
+});
+
+server.listen(port, "127.0.0.1", () => {
+  console.log(`Shaderfont demo: http://127.0.0.1:${server.address().port}/`);
 });

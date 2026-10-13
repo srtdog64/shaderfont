@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shaderfont 데모</title>
+  <script type="module" src="../src/shader-font.js"></script>
+  <link rel="stylesheet" href="./demo.css">
+</head>
+<body>
+  <main>
+    <nav class="languages" aria-label="언어">
+      <a href="./index.html" lang="en" hreflang="en">English</a>
+      <a href="./index.ko.html" lang="ko" hreflang="ko" aria-current="page">한국어</a>
+    </nav>
+    <div class="eyebrow">DOM 텍스트 효과</div>
+    <h1>Shaderfont</h1>
+    <p class="intro">재질, 드래그, 자동 등장을 따로 골라 보세요. 드래그 디졸브는 선택한 글자를 서서히 가리고, 불타는 등장은 드래그 없이 글자를 드러냅니다.</p>
+
+    <section class="stage">
+      <shader-font
+        id="sentence"
+        aria-label="효과를 적용할 텍스트"
+        spellcheck="false"
+        block
+        contenteditable="true"
+        interaction="select"
+        drag-effect="dissolve"
+        flow="reading"
+        roughness="0.26"
+        primary="#69efff"
+        secondary="#ff946a"
+        accent="#fff4bd">이 문장은 실제 DOM 텍스트입니다. 직접 고쳐 쓰거나 문장을 드래그해 보세요.</shader-font>
+      <div class="hint"><span id="gesture-hint">드래그 후 선택을 해제할 때까지 유지</span> · 현재 상태 <span class="status" id="status">대기 / 디졸브 / 0%</span></div>
+      <p id="renderer-error" role="alert" hidden></p>
+    </section>
+
+    <section class="controls" aria-label="효과 설정">
+      <label>렌더러
+        <select id="renderer">
+          <option value="canvas2d">Canvas 2D (기본)</option>
+          <option value="webgl">WebGL 2 (GPU)</option>
+        </select>
+      </label>
+      <label>주 색상 <input id="primary" type="color" value="#69efff"></label>
+      <label>보조 색상 <input id="secondary" type="color" value="#ff946a"></label>
+      <label>강조 색상 <input id="accent" type="color" value="#fff4bd"></label>
+      <label>글자 셰이더
+        <select id="shader"></select>
+      </label>
+      <label>재질 속도
+        <input id="speed" type="range" min="0" max="4" step="0.1" value="1">
+      </label>
+      <label>자동 등장
+        <select id="reveal-effect">
+          <option value="none">없음 (기본)</option>
+          <option value="burn">불타는 등장</option>
+        </select>
+      </label>
+      <label>디졸브 흐름
+        <select id="flow">
+          <option value="reading">읽기 순서 (기본)</option>
+          <option value="rtl">오른쪽에서 왼쪽</option>
+          <option value="random">질감만</option>
+        </select>
+      </label>
+      <label>침식 질감
+        <input id="roughness" type="range" min="0" max="0.48" step="0.01" value="0.26">
+      </label>
+      <label>디졸브 시간(ms)
+        <input id="dissolve-ms" type="number" min="200" max="10000" step="100" value="2400">
+      </label>
+      <label>드래그 효과
+        <select id="drag-effect">
+          <option value="none">없음 (기본 선택·편집)</option>
+          <option value="dissolve" selected>디졸브</option>
+          <option value="move">이동</option>
+          <option value="shake">춤추기·떨림</option>
+          <option value="elastic">고무줄 탄성</option>
+        </select>
+      </label>
+      <button id="reset" type="button">위치·효과 초기화</button>
+    </section>
+
+    <details class="advanced">
+      <summary>재질 크기와 화질</summary>
+      <div class="controls">
+        <label>무늬 크기 <input id="scale" type="range" min="0.25" max="4" step="0.05" value="1"></label>
+        <label>재질 해상도 <input id="resolution" type="range" min="0.25" max="1" step="0.05" value="0.5"></label>
+        <label>색 경계 부드러움 <input id="softness" type="range" min="0" max="1" step="0.05" value="0.35"></label>
+      </div>
+    </details>
+
+    <details class="advanced" id="reveal-settings">
+      <summary>자동 등장 시간</summary>
+      <p>나타난 뒤에는 글자를 온전히 보여 줍니다. 반복 대기를 0으로 두면 한 번만 등장합니다. 재질 속도와 드래그 시간은 바꾸지 않습니다.</p>
+      <div class="controls">
+        <label>등장 시간(ms) <input id="reveal-ms" type="number" min="200" max="10000" step="100" value="1800"></label>
+        <label>등장 뒤 반복 대기(ms) <input id="reveal-interval-ms" type="number" min="0" max="60000" step="500" value="5000"></label>
+        <button id="replay-reveal" type="button" disabled>등장 다시 보기</button>
+      </div>
+    </details>
+
+    <section aria-labelledby="preset-heading">
+      <h2 id="preset-heading">재질 샘플</h2>
+      <p class="intro">가리키거나 키보드로 포커스하면 움직입니다. 누르면 샘플의 재질과 색상을 위 문장에 적용합니다.</p>
+      <div id="presets" class="preset-grid"></div>
+    </section>
+
+    <pre><code id="example">&lt;script type="module" src="/src/shader-font.js"&gt;&lt;/script&gt;
+
+&lt;shader-font
+  shader="hologram"
+  renderer="canvas2d"
+  drag-effect="dissolve"
+  primary="#69efff"
+  secondary="#ff946a"
+  accent="#fff4bd"
+  roughness="0.26"
+  dissolve-ms="2400"
+  restore-ms="1800"&gt;
+  안녕하세요
+&lt;/shader-font&gt;</code></pre>
+
+    <section class="usage">
+      <h2>실제로 쓸 때</h2>
+      <p><code>shader</code>, <code>drag-effect</code>, <code>reveal-effect</code>는 서로 독립적입니다. 필요한 효과만 켜고 나머지는 <code>none</code>으로 둡니다. 효과는 브라우저의 실제 글자 모양으로 잘라냅니다.</p>
+      <div class="usage-grid">
+        <pre><code>&lt;!-- 일반 글자 + 브라우저 기본 선택 --&gt;
+&lt;shader-font shader="none" drag-effect="none"&gt;
+  평범한 본문
+&lt;/shader-font&gt;</code></pre>
+        <pre><code>&lt;!-- 1.8초 등장 + 5초 대기 후 반복 --&gt;
+&lt;shader-font shader="none" drag-effect="none"
+  reveal-effect="burn" reveal-ms="1800"
+  reveal-interval-ms="5000"&gt;
+  불타는 경계를 따라 나타나는 글자
+&lt;/shader-font&gt;</code></pre>
+        <pre><code>&lt;!-- 홀로그램 + 고무줄 드래그 --&gt;
+&lt;shader-font shader="hologram" drag-effect="elastic"&gt;
+  잡아당겨 보세요
+&lt;/shader-font&gt;</code></pre>
+      </div>
+    </section>
+
+    <section class="legacy">
+      <p>하이픈 없는 &lt;shaderfont&gt; 별칭은 브라우저 진입점에서 표준 요소로 바뀝니다.</p>
+      <shaderfont primary="#b890ff" secondary="#55f4bd" accent="#f8edff">&lt;shaderfont&gt; 호환 별칭</shaderfont>
+    </section>
+  </main>
+  <script type="module" src="./demo.js"></script>
+</body>
+</html>
