@@ -12,13 +12,14 @@ const contextRequests = [];
 const frames = new Map();
 const timers = new Map();
 const hosts = [];
+const documentStyles = new Map();
 
 class TestElement extends EventTarget {
   constructor() {
     super();
     this.dataset = {};
     this.attributesMap = new Map();
-    this.style = { setProperty(name, value) { this[name] = value; } };
+    this.style = { setProperty(name, value) { this[name] = value; }, removeProperty(name) { delete this[name]; } };
     const classes = new Set();
     this.classList = {
       add: (...names) => names.forEach(name => classes.add(name)),
@@ -81,11 +82,19 @@ globalThis.document = Object.assign(new EventTarget(), {
   hidden: false,
   defaultView: window,
   getSelection: () => selection,
-  getElementById: () => ({}),
+  getElementById: id => documentStyles.get(id) ?? null,
+  head: { append(style) {
+    style.sheet = {};
+    documentStyles.set(style.id, style);
+  } },
   querySelectorAll: () => [],
   documentElement: new TestElement(),
   body: new TestElement(),
   createElement(name) {
+    if (name === "style") {
+      const style = { tagName: "STYLE", sheet: null, textContent: "", remove() { documentStyles.delete(style.id); } };
+      return style;
+    }
     if (name === "div" || name === "span") { const element = new TestElement(); element.textContent = ""; return element; }
     assert.equal(name, "canvas");
     canvases += 1;
@@ -882,6 +891,34 @@ test("framework property writes cannot shadow internal attribute readers", () =>
   assert.equal(element.selectionFlow(), "ltr", "attributes remain the single option owner");
   element.onPointerDown(pointer("pointerdown"));
   assert.equal(element.gesture.tag, "idle");
+});
+
+test("a blocked stylesheet leaves a connected element unbound until styles are available", () => {
+  const id = "shader-font-component-styles";
+  const activeStyle = documentStyles.get(id);
+  const append = document.head.append;
+  const element = new ShaderFont();
+  element.isConnected = true;
+  documentStyles.delete(id);
+  document.head.append = style => {
+    style.sheet = null;
+    documentStyles.set(style.id, style);
+  };
+  try {
+    element.connectedCallback();
+    assert.equal(element.dataset.styleStatus, "error");
+    assert.equal(element.dataset.styleError, "STYLES_BLOCKED");
+    assert.equal(element.dataset.shaderFontBound, undefined);
+    assert.equal(element.textContent, "selected text stays selectable");
+  } finally {
+    document.head.append = append;
+    documentStyles.set(id, activeStyle);
+  }
+  hosts.push(element);
+  element.connectedCallback();
+  assert.equal(element.dataset.styleStatus, "ready");
+  assert.equal(element.dataset.styleError, undefined);
+  assert.equal(element.dataset.shaderFontBound, "true");
 });
 
 test("indicator respects the viewport and empty, invalid or offscreen ranges", () => {

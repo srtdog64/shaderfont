@@ -17,7 +17,9 @@
   "sideEffects": ["./src/shader-font.js"],
   "scripts": {
     "check": "node --check src/core.js && node --check src/index.js && node --check src/options.js && node --check src/presets.js && node --check src/paint-layout.js && node --check src/selection-range.js && node --check src/selection-gesture.js && node --check src/selection-indicator.js && node --check src/webgl-surface.js && node --check src/material-core.js && node --check src/material-renderer.js && node --check src/mask-renderer.js && node --check src/reveal-core.js && node --check src/reveal-renderer.js && node --check src/shader-font-element.js && node --check demo/demo.js && node --check demo/copy.js && node --test",
+    "check:browser": "node tools/csp-browser-check.mjs",
     "demo": "node tools/serve.mjs",
     "prepublishOnly": "npm run check"
-  }
+  },
+  "devDependencies": { "playwright": "1.62.1" }
 }

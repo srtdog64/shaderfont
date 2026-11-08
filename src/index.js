@@ -1,9 +1,9 @@
 export { SHADER_FONT_DEFAULTS, SHADER_FONT_PALETTES, SHADER_PRESETS, parseShaderFontOptions, shaderFontAttributes } from "./options.js";
 
-let registration;
+const STYLE_ERRORS = new Set(["INVALID_STYLE_NONCE", "STYLES_CONFLICT", "STYLES_BLOCKED"]);
 
 /** No DOM globals are evaluated until a browser explicitly requests effects. */
-export async function registerShaderFont() {
+export async function registerShaderFont({ styleNonce } = {}) {
   if (typeof window === "undefined" || typeof document === "undefined") {
     return { ok: false, error: "BROWSER_REQUIRED" };
   }
@@ -12,15 +12,14 @@ export async function registerShaderFont() {
       || typeof IntersectionObserver === "undefined" || typeof matchMedia !== "function") {
     return { ok: false, error: "BROWSER_FEATURE_UNAVAILABLE" };
   }
-  registration ??= import("./shader-font-element.js")
+  return import("./shader-font-element.js")
     .then(module => {
-      module.registerShaderFontElement();
+      module.registerShaderFontElement({ styleNonce });
       return { ok: true };
     })
     .catch(cause => ({
       ok: false,
-      error: "REGISTRATION_FAILED",
+      error: STYLE_ERRORS.has(cause?.code) ? cause.code : "REGISTRATION_FAILED",
       cause: cause instanceof Error ? cause.name : typeof cause
     }));
-  return registration;
 }

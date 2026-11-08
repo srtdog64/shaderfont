@@ -33,6 +33,19 @@ if (!result.ok) throw new Error(result.error);
 
 루트 import는 SSR에서도 가능합니다. `registerShaderFont()`는 브라우저에서만 호출하고, 즉시 등록하는 `shaderfont/browser`도 브라우저에서만 사용합니다.
 
+### CSP와 색상
+
+인라인 스타일을 제한하는 사이트에서는 `<shader-font>`를 등록할 때 서버가 발급한 nonce를 전달합니다.
+
+```js
+const result = await registerShaderFont({ styleNonce: trustedNonce });
+if (!result.ok) throw new Error(result.error);
+```
+
+패키지는 스타일시트가 실제로 적용됐는지 확인합니다. 차단되면 `STYLES_BLOCKED`를 반환하며, 올바른 nonce로 다시 호출할 수 있습니다. DOM에서 임의의 nonce를 읽거나 CSP를 `unsafe-inline`으로 완화할 필요는 없습니다. 즉시 등록하는 `shaderfont/browser`에는 nonce 인자가 없으므로 CSP가 엄격한 페이지에서는 루트 등록 API를 사용합니다. 이미지도 제한한다면 절차적 재질과 디졸브·등장 마스크를 위해 `img-src`에 `data:`를 허용해야 합니다.
+
+색상 우선순위는 `primary`·`secondary`·`accent` 속성, 요소나 상위에서 지정한 `--sf-primary`·`--sf-secondary`·`--sf-accent` CSS 변수, 기본 밝은 팔레트 순서입니다. 페이지 테마가 바뀌어도 저장된 색상은 자동으로 덮지 않습니다. 어두운 배경에서는 `SHADER_FONT_PALETTES.find(p => p.name === "dark")`의 세 색을 요소 속성에 지정하고, 밝은 배경으로 돌아올 때 다시 밝은 팔레트를 지정하면 됩니다. 전역 흰색 변수가 글자에 직접 지정한 색을 덮지도 않습니다.
+
 ## 데모
 
 저장소를 복제한 뒤 실행합니다.
@@ -40,7 +53,10 @@ if (!result.ok) throw new Error(result.error);
 ```sh
 npm run demo
 npm run check
+npm run check:browser
 ```
+
+브라우저 검사는 로컬 Chrome에 엄격한 CSP를 적용해 nonce 실패·재시도, 밝고 어두운 색상, 홀로그램 애니메이션, 절차적 재질, 선택 디졸브, 타오르는 등장 효과와 움직임 줄이기를 확인합니다.
 
 [영어 데모](http://127.0.0.1:8766/demo/index.html)와 [한글 데모](http://127.0.0.1:8766/demo/index.ko.html)는 같은 설정과 편집 가능한 텍스트를 제공합니다.
 

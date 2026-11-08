@@ -45,11 +45,7 @@ const DEFAULT_COLORS = Object.freeze({
   accent: SHADER_FONT_DEFAULTS.accent
 });
 
-function ensureStyles() {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = `
+const COMPONENT_STYLES = `
     shader-font,
     shaderfont {
       --sf-x: 0px;
@@ -69,6 +65,9 @@ function ensureStyles() {
       --_sf-primary: ${DEFAULT_COLORS.primary};
       --_sf-secondary: ${DEFAULT_COLORS.secondary};
       --_sf-accent: ${DEFAULT_COLORS.accent};
+      --_sf-author-primary: initial;
+      --_sf-author-secondary: initial;
+      --_sf-author-accent: initial;
       display: inline;
       box-decoration-break: slice;
       -webkit-box-decoration-break: slice;
@@ -80,25 +79,25 @@ function ensureStyles() {
         var(--sf-burn-edge-image, none),
         repeating-linear-gradient(
           180deg,
-          var(--sf-accent, var(--_sf-accent)) 0 2px,
-          var(--sf-secondary, var(--_sf-secondary)) 2px 4px,
-          var(--sf-primary, var(--_sf-primary)) 4px 5px,
-          var(--sf-accent, var(--_sf-accent)) 5px 7px
+          var(--_sf-author-accent, var(--sf-accent, var(--_sf-accent))) 0 2px,
+          var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))) 2px 4px,
+          var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))) 4px 5px,
+          var(--_sf-author-accent, var(--sf-accent, var(--_sf-accent))) 5px 7px
         ),
         linear-gradient(
           135deg,
-          var(--sf-primary, var(--_sf-primary)) 0%,
-          var(--sf-accent, var(--_sf-accent)) 38%,
-          var(--sf-secondary, var(--_sf-secondary)) 72%,
-          var(--sf-primary, var(--_sf-primary)) 100%
+          var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))) 0%,
+          var(--_sf-author-accent, var(--sf-accent, var(--_sf-accent))) 38%,
+          var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))) 72%,
+          var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))) 100%
         );
       background-size: 100% 100%, 100% 7px, 100% 100%;
       background-clip: text;
       -webkit-background-clip: text;
       background-blend-mode: normal;
       text-shadow:
-        -.018em 0 color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 70%, transparent),
-        .018em 0 color-mix(in srgb, var(--sf-secondary, var(--_sf-secondary)) 62%, transparent);
+        -.018em 0 color-mix(in srgb, var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))) 70%, transparent),
+        .018em 0 color-mix(in srgb, var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))) 62%, transparent);
       filter: none;
       transform:
         translate3d(var(--sf-x), var(--sf-y), 0)
@@ -107,7 +106,7 @@ function ensureStyles() {
         scale(var(--sf-effect-scale-x), var(--sf-effect-scale-y));
       transform-origin: center;
       opacity: var(--sf-fade);
-      caret-color: var(--sf-primary, var(--_sf-primary));
+      caret-color: var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary)));
       -webkit-mask-repeat: no-repeat;
       mask-repeat: no-repeat;
       -webkit-mask-position: 0 0;
@@ -133,7 +132,7 @@ function ensureStyles() {
     }
     shader-font[interaction="none"] { pointer-events: none; }
     shader-font[contenteditable]:focus {
-      outline: 1px solid color-mix(in srgb, var(--sf-primary, var(--_sf-primary)) 38%, transparent);
+      outline: 1px solid color-mix(in srgb, var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))) 38%, transparent);
       outline-offset: .16em;
     }
     shader-font::selection, shaderfont::selection {
@@ -223,12 +222,12 @@ function ensureStyles() {
 
     @keyframes shader-font-scan { to { background-position: 0 0, 0 7px, 0 0; } }
     @keyframes shader-font-outline-jitter {
-      0%, 100% { text-shadow: -.018em 0 var(--sf-primary, var(--_sf-primary)), .018em 0 var(--sf-secondary, var(--_sf-secondary)); }
-      14% { text-shadow: -.052em -.004em var(--sf-primary, var(--_sf-primary)), .026em .003em var(--sf-secondary, var(--_sf-secondary)); }
-      31% { text-shadow: .024em 0 var(--sf-primary, var(--_sf-primary)), -.036em 0 var(--sf-secondary, var(--_sf-secondary)); }
-      48% { text-shadow: -.028em .005em var(--sf-primary, var(--_sf-primary)), .058em -.003em var(--sf-secondary, var(--_sf-secondary)); }
-      67% { text-shadow: -.062em 0 var(--sf-primary, var(--_sf-primary)), .032em .004em var(--sf-secondary, var(--_sf-secondary)); }
-      83% { text-shadow: .036em -.003em var(--sf-primary, var(--_sf-primary)), -.022em .003em var(--sf-secondary, var(--_sf-secondary)); }
+      0%, 100% { text-shadow: -.018em 0 var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))), .018em 0 var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))); }
+      14% { text-shadow: -.052em -.004em var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))), .026em .003em var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))); }
+      31% { text-shadow: .024em 0 var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))), -.036em 0 var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))); }
+      48% { text-shadow: -.028em .005em var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))), .058em -.003em var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))); }
+      67% { text-shadow: -.062em 0 var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))), .032em .004em var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))); }
+      83% { text-shadow: .036em -.003em var(--_sf-author-primary, var(--sf-primary, var(--_sf-primary))), -.022em .003em var(--_sf-author-secondary, var(--sf-secondary, var(--_sf-secondary))); }
     }
     @keyframes shader-font-drag-shake {
       0%, 100% { translate: var(--sf-shake-neg-small) var(--sf-shake-small); rotate: var(--sf-shake-neg-angle); }
@@ -241,7 +240,39 @@ function ensureStyles() {
       shader-font, shaderfont { animation: none !important; translate: none; rotate: none; }
     }
   `;
+
+let installedStyleNonce;
+
+function styleError(code) {
+  return Object.assign(new Error(code), { code });
+}
+
+function ensureStyles(styleNonce = installedStyleNonce) {
+  if (styleNonce !== undefined && (typeof styleNonce !== "string" || !styleNonce || /\s/.test(styleNonce))) {
+    throw styleError("INVALID_STYLE_NONCE");
+  }
+  const existing = document.getElementById(STYLE_ID);
+  if (existing) {
+    if (existing.tagName !== "STYLE" || existing.textContent !== COMPONENT_STYLES) {
+      throw styleError("STYLES_CONFLICT");
+    }
+    if (existing.sheet && !existing.sheet.disabled) {
+      if (styleNonce && existing.nonce === styleNonce) installedStyleNonce = styleNonce;
+      return;
+    }
+    if (!styleNonce) throw styleError("STYLES_BLOCKED");
+    existing.remove();
+  }
+  const style = document.createElement("style");
+  style.id = STYLE_ID;
+  if (styleNonce) style.nonce = styleNonce;
+  style.textContent = COMPONENT_STYLES;
   document.head.append(style);
+  if (!style.sheet || style.sheet.disabled) {
+    style.remove();
+    throw styleError("STYLES_BLOCKED");
+  }
+  installedStyleNonce = styleNonce;
 }
 
 function colorOrDefault(element, attribute) {
@@ -367,7 +398,15 @@ export class ShaderFont extends HTMLElement {
   }
 
   connectedCallback() {
-    ensureStyles();
+    try {
+      ensureStyles();
+      this.dataset.styleStatus = "ready";
+      delete this.dataset.styleError;
+    } catch (error) {
+      this.dataset.styleStatus = "error";
+      this.dataset.styleError = error.code ?? "STYLE_INSTALL_FAILED";
+      return;
+    }
     this.applyAttributes();
     if (this.dataset.shaderFontBound === "true") return;
     this.dataset.shaderFontBound = "true";
@@ -456,7 +495,9 @@ export class ShaderFont extends HTMLElement {
 
   applyAttributes() {
     for (const name of Object.keys(DEFAULT_COLORS)) {
-      this.style.setProperty(`--_sf-${name}`, colorOrDefault(this, name));
+      const value = this.getAttribute(name)?.trim();
+      if (value && CSS.supports("color", value)) this.style.setProperty(`--_sf-author-${name}`, value);
+      else this.style.removeProperty(`--_sf-author-${name}`);
     }
     this.dataset.shader = this.shaderPreset();
     this.dataset.dragEffect = this.dragEffect();
@@ -571,6 +612,10 @@ export class ShaderFont extends HTMLElement {
     const tick = now => {
       this.materialFrame = 0;
       if (!this.isConnected || !this.inViewport || document.hidden || this.rendererError) return;
+      if (this.motionQuery.matches) {
+        this.syncMaterialPlayback();
+        return;
+      }
       const speed = numberAttribute(this, "speed", SHADER_FONT_DEFAULTS.speed, 0, 4);
       if (this.materialLastTime !== null) this.materialElapsed += Math.max(0, now - this.materialLastTime) / 1000 * speed;
       this.materialLastTime = now;
@@ -598,7 +643,8 @@ export class ShaderFont extends HTMLElement {
       if (!this.materialInput) {
         const computed = getComputedStyle(this);
         const colors = ["primary", "secondary", "accent"].map(name => {
-          const color = computed.getPropertyValue(`--sf-${name}`).trim() || colorOrDefault(this, name);
+          const color = computed.getPropertyValue(`--_sf-author-${name}`).trim()
+            || computed.getPropertyValue(`--sf-${name}`).trim() || colorOrDefault(this, name);
           if (!/^#[0-9a-f]{6}$/i.test(color)) throw rendererError("INVALID_MATERIAL_COLOR", "Procedural materials require six-digit hex colors");
           return [1, 3, 5].map(index => Number.parseInt(color.slice(index, index + 2), 16) / 255);
         });
@@ -690,7 +736,11 @@ export class ShaderFont extends HTMLElement {
     if (this.revealFrame || this.revealTimer) return;
     const tick = now => {
       this.revealFrame = 0;
-      if (!this.isConnected || !this.inViewport || document.hidden || this.rendererError || this.motionQuery.matches) return;
+      if (this.motionQuery.matches) {
+        this.syncRevealPlayback();
+        return;
+      }
+      if (!this.isConnected || !this.inViewport || document.hidden || this.rendererError) return;
       if (this.revealLastTime !== null) this.revealElapsed += Math.max(0, now - this.revealLastTime);
       this.revealLastTime = now;
       const duration = numberAttribute(this, "reveal-ms", SHADER_FONT_DEFAULTS.revealMs, 200, 10000);
@@ -1310,8 +1360,8 @@ export function upgradeLegacyShaderfont(root = document) {
 
 let aliasObserver;
 
-export function registerShaderFontElement({ legacyAliases = false } = {}) {
-  ensureStyles();
+export function registerShaderFontElement({ legacyAliases = false, styleNonce } = {}) {
+  ensureStyles(styleNonce);
   if (!customElements.get("shader-font")) customElements.define("shader-font", ShaderFont);
   // Only the legacy script API needs a document-wide alias observer.
   if (legacyAliases && !aliasObserver) {
