@@ -1,6 +1,6 @@
 {
   "name": "shaderfont",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "type": "module",
   "description": "Animated materials and selection effects on DOM text, with Canvas 2D and WebGL renderers.",
   "license": "MIT",
